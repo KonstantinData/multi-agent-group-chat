@@ -1,0 +1,5 @@
+pyautogen==0.2.35
+pydantic>=2.0
+python-dotenv
+streamlit
+fpdf2

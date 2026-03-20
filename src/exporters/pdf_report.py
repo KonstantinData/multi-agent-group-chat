@@ -404,4 +404,11 @@ def generate_pdf(pipeline_data: dict[str, Any], lang: str = "de") -> bytes:
         for s in steps:
             pdf.bullet(str(s))
 
-    return pdf.output()
+    output = pdf.output()
+    if isinstance(output, bytes):
+        return output
+    if isinstance(output, bytearray):
+        return bytes(output)
+    if isinstance(output, str):
+        return output.encode("latin-1")
+    return bytes(output)

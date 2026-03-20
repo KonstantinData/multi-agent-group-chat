@@ -1,11 +1,15 @@
 """Launcher: preflight check, start Streamlit, open browser automatically."""
+from __future__ import annotations
+
+import argparse
+import os
+import signal
 import subprocess
 import sys
-import os
 import time
 import socket
 import webbrowser
-import signal
+from typing import Iterable
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = sys.executable
@@ -13,20 +17,62 @@ PORT = 8501
 URL = f"http://localhost:{PORT}"
 
 
+def _listening_pids_windows(port: int) -> list[int]:
+    out = subprocess.check_output(
+        ["netstat", "-ano"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+    pids = []
+    for line in out.splitlines():
+        if f":{port}" not in line:
+            continue
+        upper = line.upper()
+        if "LISTENING" not in upper and "ABH" not in upper:
+            continue
+        parts = line.split()
+        if parts and parts[-1].isdigit():
+            pids.append(int(parts[-1]))
+    return pids
+
+
+def _listening_pids_posix(port: int) -> list[int]:
+    proc = subprocess.run(
+        ["lsof", "-ti", f"tcp:{port}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return [int(pid) for pid in proc.stdout.split() if pid.isdigit()]
+
+
+def _listening_pids(port: int) -> list[int]:
+    if os.name == "nt":
+        return _listening_pids_windows(port)
+    return _listening_pids_posix(port)
+
+
+def _terminate_pids(pids: Iterable[int]) -> None:
+    for pid in pids:
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F"],
+                    capture_output=True,
+                    check=False,
+                )
+            else:
+                os.kill(pid, signal.SIGTERM)
+            print(f"  Killed old process PID {pid}")
+        except OSError:
+            continue
+
+
 def kill_port(port):
     """Kill any process using the given port."""
     try:
-        out = subprocess.check_output(
-            f'netstat -ano | findstr ":{port}" | findstr "ABHÖREN"',
-            shell=True, text=True,
-        )
-        for line in out.strip().splitlines():
-            pid = line.strip().split()[-1]
-            if pid.isdigit():
-                subprocess.run(f"taskkill /PID {pid} /F", shell=True,
-                               capture_output=True)
-                print(f"  Killed old process PID {pid}")
-    except subprocess.CalledProcessError:
+        _terminate_pids(_listening_pids(port))
+    except (FileNotFoundError, subprocess.CalledProcessError):
         pass
 
 
@@ -56,48 +102,64 @@ def wait_for_server(port, timeout=30):
     return False
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Launch the Streamlit UI for the Liquisto pipeline.")
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Keep the launcher attached to the Streamlit process instead of exiting after startup.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
     print("=" * 60)
     print("  Liquisto Market Intelligence Pipeline")
     print("=" * 60)
 
-    # Step 1: Preflight
-    print("\n[1/4] Running preflight checks...")
-    ret = subprocess.run([PYTHON, "preflight.py"], capture_output=True, text=True)
-    if ret.returncode != 0:
-        print(ret.stdout)
-        print(ret.stderr)
-        print("\nPreflight FAILED. Cannot start.")
-        input("Press Enter to exit...")
-        sys.exit(1)
-    print("  All checks passed.")
-
-    # Step 2: Free port
-    print(f"\n[2/4] Ensuring port {PORT} is free...")
+    # Step 1: Free port
+    print(f"\n[1/4] Ensuring port {PORT} is free...")
     if not port_free(PORT):
         kill_port(PORT)
         time.sleep(1)
         if not port_free(PORT):
             print(f"  ERROR: Port {PORT} still in use. Cannot start.")
-            input("Press Enter to exit...")
-            sys.exit(1)
+            return 1
     print(f"  Port {PORT} is free.")
+
+    # Step 2: Preflight
+    print("\n[2/4] Running preflight checks...")
+    ret = subprocess.run([PYTHON, "preflight.py"], capture_output=True, text=True)
+    if ret.returncode != 0:
+        print(ret.stdout)
+        print(ret.stderr)
+        print("\nPreflight FAILED. Cannot start.")
+        return 1
+    print("  All checks passed.")
 
     # Step 3: Start Streamlit
     print(f"\n[3/4] Starting Streamlit server...")
-    proc = subprocess.Popen(
-        [PYTHON, "-m", "streamlit", "run", "ui/app.py",
-         "--server.headless", "true", "--server.port", str(PORT)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-    )
+    popen_kwargs = {
+        "args": [
+            PYTHON, "-m", "streamlit", "run", "ui/app.py",
+            "--server.headless", "true", "--server.port", str(PORT),
+        ],
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(**popen_kwargs)
 
     print(f"  Waiting for server (PID {proc.pid})...")
     if not wait_for_server(PORT, timeout=30):
         print("  ERROR: Server did not start within 30 seconds.")
         proc.kill()
-        input("Press Enter to exit...")
-        sys.exit(1)
+        return 1
     print(f"  Server is running on {URL}")
 
     # Step 4: Open browser
@@ -107,10 +169,15 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"  Streamlit running at {URL}")
-    print("  Press Ctrl+C to stop the server.")
+    if args.foreground:
+        print("  Press Ctrl+C to stop the server.")
+    else:
+        print("  Launcher exits now. Streamlit continues in the background.")
     print("=" * 60)
 
-    # Keep running until Ctrl+C or process dies
+    if not args.foreground:
+        return 0
+
     try:
         while proc.poll() is None:
             time.sleep(1)
@@ -120,7 +187,8 @@ def main():
         proc.wait(timeout=5)
 
     print("Server stopped.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

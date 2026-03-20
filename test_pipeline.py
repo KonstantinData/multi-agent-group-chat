@@ -1,295 +1,472 @@
-"""Simulate a full pipeline run with mock data – no OpenAI calls needed."""
+"""Targeted tests for the AG2-native Liquisto pipeline."""
 from __future__ import annotations
 
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+import autogen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import json
-import time
-from datetime import datetime, timezone
-
-from src.pipeline_runner import AGENT_META, PIPELINE_STEPS, _extract_pipeline_data, _try_parse_json
+from src.agents.definitions import create_group_pattern
 from src.exporters.pdf_report import generate_pdf
+from src.pipeline_runner import (
+    _collect_usage_summary,
+    _extract_pipeline_data,
+    _prepare_group_chat,
+    _resolve_group_chat_entrypoint,
+    _try_parse_json,
+)
+from src.tools.research import _build_buyer_queries, _build_company_queries, _build_industry_queries
 
 
-def _ts():
+def _ts() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _concierge_reply() -> str:
+    return json.dumps(
+        {
+            "company_name": "imsgear SE",
+            "web_domain": "imsgear.com",
+            "language": "de",
+            "observations": ["Website reachable."],
+        }
+    )
+
+
+def _company_reply(revenue: str = "n/v") -> str:
+    return json.dumps(
+        {
+            "company_name": "IMS Gear SE & Co. KGaA",
+            "legal_form": "SE & Co. KGaA",
+            "founded": "1863",
+            "headquarters": "Donaueschingen, Germany",
+            "website": "https://www.imsgear.com",
+            "industry": "Machinery/Mechanical Engineering",
+            "employees": "2775",
+            "revenue": revenue,
+            "products_and_services": ["Gear components", "Transmission systems"],
+            "key_people": [{"name": "Bernd Schilling", "role": "Managing Director"}],
+            "description": "IMS Gear manufactures gears and transmission technology.",
+            "economic_situation": {
+                "revenue_trend": "n/v",
+                "profitability": "n/v",
+                "recent_events": [],
+                "inventory_signals": [],
+                "financial_pressure": "n/v",
+                "assessment": "n/v",
+            },
+            "sources": [],
+        }
+    )
+
+
+def _industry_reply() -> str:
+    return json.dumps(
+        {
+            "industry_name": "Machinery/Mechanical Engineering",
+            "market_size": "n/v",
+            "trend_direction": "unsicher",
+            "growth_rate": "n/v",
+            "key_trends": [],
+            "overcapacity_signals": [],
+            "excess_stock_indicators": "n/v",
+            "demand_outlook": "n/v",
+            "assessment": "n/v",
+            "sources": [],
+        }
+    )
+
+
+def _market_reply() -> str:
+    empty_tier = {"companies": [], "assessment": "n/v", "sources": []}
+    return json.dumps(
+        {
+            "target_company": "IMS Gear SE & Co. KGaA",
+            "peer_competitors": empty_tier,
+            "downstream_buyers": empty_tier,
+            "service_providers": empty_tier,
+            "cross_industry_buyers": empty_tier,
+        }
+    )
+
+
+def _qa_reply() -> str:
+    return json.dumps(
+        {
+            "validated_agents": ["Concierge", "CompanyIntelligence"],
+            "evidence_health": "mittel",
+            "open_gaps": ["No fresh revenue evidence."],
+            "recommendations": ["Keep unsupported values at n/v."],
+        }
+    )
+
+
+def _synthesis_reply() -> str:
+    return json.dumps(
+        {
+            "target_company": "IMS Gear SE & Co. KGaA",
+            "executive_summary": "IMS Gear is a mechanical engineering company with limited current financial evidence.",
+            "liquisto_service_relevance": [
+                {"service_area": "excess_inventory", "relevance": "unklar", "reasoning": "Insufficient proof."}
+            ],
+            "case_assessments": [
+                {
+                    "option": "kaufen",
+                    "arguments": [
+                        {
+                            "argument": "Potential aftermarket relevance exists.",
+                            "direction": "pro",
+                            "based_on": "MarketNetwork",
+                        }
+                    ],
+                    "summary": "Only a tentative case can be made.",
+                }
+            ],
+            "buyer_market_summary": "Buyer evidence is weak.",
+            "total_peer_competitors": 0,
+            "total_downstream_buyers": 0,
+            "total_service_providers": 0,
+            "total_cross_industry_buyers": 0,
+            "key_risks": ["Evidence is weak."],
+            "next_steps": ["Research fresh primary sources."],
+            "sources": [],
+        }
+    )
+
+
+def _review(approved: bool, issue: str = "", instruction: str = "") -> str:
+    payload = {
+        "approved": approved,
+        "issues": [issue] if issue else [],
+        "revision_instructions": [instruction] if instruction else [],
+    }
+    return json.dumps(payload)
+
+
+class SequenceAgent(autogen.ConversableAgent):
+    def __init__(self, name: str, replies: list[str]):
+        super().__init__(name=name, llm_config=False, human_input_mode="NEVER")
+        self._replies = list(replies)
+        self.calls = 0
+
+    def generate_reply(self, messages=None, sender=None, exclude=()):  # type: ignore[override]
+        self.calls += 1
+        if not self._replies:
+            raise RuntimeError(f"{self.name} has no reply configured for call {self.calls}")
+        return self._replies.pop(0)
+
+
+class FakeUsageAgent:
+    def __init__(self, actual=None, total=None):
+        self._actual = actual
+        self._total = total
+
+    def get_actual_usage(self):
+        return self._actual
+
+    def get_total_usage(self):
+        return self._total
+
+
+def _workflow_agents(*, company_replies=None, company_critic_replies=None) -> dict[str, autogen.ConversableAgent]:
+    return {
+        "admin": autogen.ConversableAgent(
+            name="Admin",
+            llm_config=False,
+            human_input_mode="NEVER",
+            default_auto_reply="Admin acknowledged. Proceed with the configured workflow.",
+        ),
+        "concierge": SequenceAgent("Concierge", [_concierge_reply()]),
+        "concierge_critic": SequenceAgent("ConciergeCritic", [_review(True)]),
+        "company_intelligence": SequenceAgent(
+            "CompanyIntelligence",
+            company_replies or [_company_reply()],
+        ),
+        "company_intelligence_critic": SequenceAgent(
+            "CompanyIntelligenceCritic",
+            company_critic_replies or [_review(True)],
+        ),
+        "strategic_signals": SequenceAgent("StrategicSignals", [_industry_reply()]),
+        "strategic_signals_critic": SequenceAgent("StrategicSignalsCritic", [_review(True)]),
+        "market_network": SequenceAgent("MarketNetwork", [_market_reply()]),
+        "market_network_critic": SequenceAgent("MarketNetworkCritic", [_review(True)]),
+        "evidence_qa": SequenceAgent("EvidenceQA", [_qa_reply()]),
+        "evidence_qa_critic": SequenceAgent("EvidenceQACritic", [_review(True)]),
+        "synthesis": SequenceAgent("Synthesis", [_synthesis_reply()]),
+        "synthesis_critic": SequenceAgent("SynthesisCritic", [_review(True)]),
+    }
+
+
+def _run_pattern_chat(agents: dict[str, autogen.ConversableAgent], message: str):
+    pattern = create_group_pattern(agents, llm_config=False)
+    prepared_chat = _prepare_group_chat(pattern, max_rounds=20, messages=message)
+    sender, initial_message, clear_history = _resolve_group_chat_entrypoint(
+        prepared_chat,
+        fallback_message=message,
+    )
+    return sender.initiate_chat(
+        prepared_chat.manager,
+        message=initial_message,
+        clear_history=clear_history,
+        summary_method=pattern.summary_method,
+        silent=True,
+    )
+
+
+def test_groupchat_routes_full_workflow_in_order():
+    agents = _workflow_agents()
+    result = _run_pattern_chat(agents, "Research imsgear.com")
+
+    workflow_names = {
+        "Admin",
+        "Concierge",
+        "ConciergeCritic",
+        "CompanyIntelligence",
+        "CompanyIntelligenceCritic",
+        "StrategicSignals",
+        "StrategicSignalsCritic",
+        "MarketNetwork",
+        "MarketNetworkCritic",
+        "EvidenceQA",
+        "EvidenceQACritic",
+        "Synthesis",
+        "SynthesisCritic",
+    }
+    actual_order = [msg["name"] for msg in result.chat_history if msg.get("name") in workflow_names]
+    expected_order = [
+        "Admin",
+        "Concierge",
+        "ConciergeCritic",
+        "CompanyIntelligence",
+        "CompanyIntelligenceCritic",
+        "StrategicSignals",
+        "StrategicSignalsCritic",
+        "MarketNetwork",
+        "MarketNetworkCritic",
+        "EvidenceQA",
+        "EvidenceQACritic",
+        "Synthesis",
+        "SynthesisCritic",
+        "Admin",
+    ]
+    assert actual_order == expected_order
+    assert actual_order[-1] == "Admin"
+
+
+def test_groupchat_retries_same_producer_after_critic_rejection():
+    agents = _workflow_agents(
+        company_replies=[_company_reply("EUR 124m"), _company_reply("n/v")],
+        company_critic_replies=[
+            _review(False, "Revenue unsupported.", "Set unsupported revenue to n/v."),
+            _review(True),
+        ],
+    )
+    result = _run_pattern_chat(agents, "Research imsgear.com")
+
+    workflow_names = {
+        "Admin",
+        "Concierge",
+        "ConciergeCritic",
+        "CompanyIntelligence",
+        "CompanyIntelligenceCritic",
+        "StrategicSignals",
+        "StrategicSignalsCritic",
+        "MarketNetwork",
+        "MarketNetworkCritic",
+        "EvidenceQA",
+        "EvidenceQACritic",
+        "Synthesis",
+        "SynthesisCritic",
+    }
+    order = [msg["name"] for msg in result.chat_history if msg.get("name") in workflow_names]
+    company_indexes = [index for index, name in enumerate(order) if name == "CompanyIntelligence"]
+    assert len(company_indexes) == 2
+    assert order[company_indexes[0] + 1] == "CompanyIntelligenceCritic"
+    assert order[company_indexes[1] - 1] == "CompanyIntelligenceCritic"
+    assert "StrategicSignals" in order[company_indexes[1] + 1 :]
+
+
+def test_research_query_builders_are_agent_specific():
+    company_queries = _build_company_queries("IMS Gear SE & Co. KGaA", "imsgear.com")
+    industry_queries = _build_industry_queries(
+        "IMS Gear SE & Co. KGaA",
+        "Transmission Technology",
+        "Planetary gear systems, Low Noise Gear Systems",
+    )
+    buyer_queries = _build_buyer_queries(
+        "IMS Gear SE & Co. KGaA",
+        "Planetary gear systems, Low Noise Gear Systems",
+        "imsgear.com",
+    )
+
+    assert any("site:imsgear.com" in query for query in company_queries)
+    assert any("sustainability report" in query.lower() for query in company_queries)
+    assert any("Transmission Technology" in query for query in industry_queries)
+    assert any("market report 2023" in query.lower() for query in industry_queries)
+    assert any("customers" in query.lower() for query in buyer_queries)
+    assert any("competitors" in query.lower() for query in buyer_queries)
+    assert any("site:imsgear.com" in query for query in buyer_queries)
+
+
+def test_collect_usage_summary_aggregates_agents():
+    usage = _collect_usage_summary(
+        {
+            "company": FakeUsageAgent(
+                actual={
+                    "total_cost": 0.01,
+                    "gpt-4o-mini": {
+                        "cost": 0.01,
+                        "prompt_tokens": 100,
+                        "completion_tokens": 50,
+                        "total_tokens": 150,
+                    },
+                },
+                total={
+                    "total_cost": 0.02,
+                    "gpt-4o-mini": {
+                        "cost": 0.02,
+                        "prompt_tokens": 120,
+                        "completion_tokens": 80,
+                        "total_tokens": 200,
+                    },
+                },
+            ),
+            "market": FakeUsageAgent(
+                actual={
+                    "total_cost": 0.005,
+                    "gpt-4o-mini": {
+                        "cost": 0.005,
+                        "prompt_tokens": 40,
+                        "completion_tokens": 10,
+                        "total_tokens": 50,
+                    },
+                },
+                total={
+                    "total_cost": 0.007,
+                    "gpt-4o-mini": {
+                        "cost": 0.007,
+                        "prompt_tokens": 60,
+                        "completion_tokens": 10,
+                        "total_tokens": 70,
+                    },
+                },
+            ),
+        }
+    )
+
+    assert usage["actual"]["total_cost"] == 0.015
+    assert usage["actual"]["prompt_tokens"] == 140
+    assert usage["actual"]["completion_tokens"] == 60
+    assert usage["actual"]["total_tokens"] == 200
+    assert usage["total"]["total_cost"] == 0.027
+    assert usage["total"]["models"]["gpt-4o-mini"]["total_tokens"] == 270
+
+
+def test_extract_pipeline_data_and_pdf_generation():
+    messages = []
+
+    def emit(agent: str, content: str, msg_type: str = "agent_message") -> None:
+        messages.append(
+            {
+                "type": msg_type,
+                "agent": agent,
+                "content": content,
+                "timestamp": _ts(),
+            }
+        )
+
+    emit("Admin", "Research the company 'Lenze SE' (domain: lenze.com) for a Liquisto sales meeting preparation.")
+    emit("Concierge", _concierge_reply())
+    emit("CompanyIntelligence", _company_reply())
+    emit("StrategicSignals", _industry_reply())
+    emit("MarketNetwork", _market_reply())
+    emit("EvidenceQA", _qa_reply())
+    emit("Synthesis", _synthesis_reply())
+    emit("Admin", "TERMINATE")
+
+    pipeline_data = _extract_pipeline_data(messages)
+    assert pipeline_data["company_profile"]
+    assert pipeline_data["industry_analysis"]
+    assert pipeline_data["market_network"]
+    assert pipeline_data["quality_review"]
+    assert pipeline_data["synthesis"]
+
+    pdf_de = generate_pdf(pipeline_data, lang="de")
+    pdf_en = generate_pdf(pipeline_data, lang="en")
+    assert len(pdf_de) > 1000
+    assert len(pdf_en) > 1000
+
+
+def test_extract_pipeline_data_rejects_legacy_payload_shapes():
+    legacy_company_payload = json.dumps(
+        {
+            "LegalInformation": {
+                "LegalName": "IMS Gear SE & Co. KGaA",
+                "LegalForm": "SE & Co. KGaA",
+            },
+            "IndustryAndMarket": {
+                "Industry": "Machinery/Mechanical Engineering",
+            },
+        }
+    )
+    messages = [
+        {
+            "type": "agent_message",
+            "agent": "CompanyIntelligence",
+            "content": legacy_company_payload,
+            "timestamp": _ts(),
+        }
+    ]
+
+    pipeline_data = _extract_pipeline_data(messages)
+
+    assert not pipeline_data["company_profile"]
+    assert pipeline_data["validation_errors"]
+    assert pipeline_data["validation_errors"][0]["agent"] == "CompanyIntelligence"
+    assert pipeline_data["validation_errors"][0]["section"] == "company_profile"
+    assert "company_name" in pipeline_data["validation_errors"][0]["details"]
+
+
+def test_try_parse_json():
+    test_cases = [
+        ("direct json", '{"key": "value"}', True),
+        ("markdown fence", '```json\n{"key": "value"}\n```', True),
+        ("text + json", 'Here is the result:\n{"key": "value"}\nDone.', True),
+        ("no json", "This is just text", False),
+        ("empty", "", False),
+    ]
+    for _label, text, should_parse in test_cases:
+        result = _try_parse_json(text)
+        assert (result is not None) == should_parse
 
 
 def main():
     print("=" * 60)
-    print("SIMULATED PIPELINE TEST")
+    print("AG2-NATIVE PIPELINE TEST")
     print("=" * 60)
 
-    messages = []
+    test_groupchat_routes_full_workflow_in_order()
+    print("  ✅ full AG2 workflow order is correct")
+    test_groupchat_retries_same_producer_after_critic_rejection()
+    print("  ✅ critic rejection loops back to the same producer")
+    test_research_query_builders_are_agent_specific()
+    print("  ✅ agent-specific research query packs are targeted")
+    test_collect_usage_summary_aggregates_agents()
+    print("  ✅ usage and cost summaries aggregate across agents")
+    test_extract_pipeline_data_and_pdf_generation()
+    print("  ✅ extraction and PDF generation still work")
+    test_extract_pipeline_data_rejects_legacy_payload_shapes()
+    print("  ✅ legacy payload shapes are rejected instead of normalized")
+    test_try_parse_json()
+    print("  ✅ JSON extraction handles expected variants")
 
-    def emit(agent: str, content: str, msg_type: str = "agent_message"):
-        event = {
-            "type": msg_type,
-            "agent": agent,
-            "content": content,
-            "timestamp": _ts(),
-            "meta": AGENT_META.get(agent, {"icon": "⚙️", "color": "#adb5bd"}),
-        }
-        messages.append(event)
-        icon = event["meta"]["icon"]
-        preview = content.replace("\n", " ")[:80]
-        print(f"  {icon} {agent:20s} | {msg_type:15s} | {preview}")
-
-    # --- System init ---
-    emit("System", "Pipeline gestartet für: Lenze SE (lenze.com)", "debug")
-    emit("System", "LLM Model: gpt-4 (SIMULATED)", "debug")
-    emit("System", "Agenten erstellt: admin, concierge, company_intelligence, strategic_signals, market_network, evidence_qa, synthesis", "debug")
-    emit("System", "GroupChat erstellt: 7 Agenten, max_round=25", "debug")
-    emit("System", "Task erstellt, starte Chat...", "debug")
-    time.sleep(0.5)
-
-    # --- Admin ---
-    emit("Admin", "Research the company 'Lenze SE' (domain: lenze.com) for a Liquisto sales meeting preparation.")
-    time.sleep(0.3)
-
-    # --- Concierge ---
-    print(f"\n--- Step 1: Concierge ---")
-    concierge_json = json.dumps({
-        "company_name": "Lenze SE",
-        "web_domain": "lenze.com",
-        "language": "de",
-        "observations": "Website erreichbar. Lenze ist ein Antriebstechnik-Hersteller."
-    }, ensure_ascii=False, indent=2)
-    emit("Concierge", concierge_json)
-    time.sleep(0.3)
-
-    # --- CompanyIntelligence ---
-    print(f"\n--- Step 2: CompanyIntelligence ---")
-    company_json = json.dumps({
-        "company_name": "Lenze SE",
-        "legal_form": "SE",
-        "founded": "1947",
-        "headquarters": "Aerzen, Deutschland",
-        "website": "https://lenze.com",
-        "industry": "Antriebstechnik / Automatisierung",
-        "employees": "ca. 4.000",
-        "revenue": "ca. 900 Mio. EUR",
-        "products_and_services": [
-            "Frequenzumrichter",
-            "Servomotoren",
-            "Getriebemotoren",
-            "Steuerungstechnik",
-            "Software & Engineering Tools"
-        ],
-        "key_people": [
-            {"name": "Christian Wendler", "role": "CEO"},
-            {"name": "Frank Maier", "role": "CTO"}
-        ],
-        "description": "Lenze ist ein global agierender Spezialist für Antriebs- und Automatisierungstechnik.",
-        "economic_situation": {
-            "revenue_trend": "leicht rückläufig",
-            "profitability": "stabil",
-            "recent_events": ["Restrukturierung 2024", "Fokus auf Digitalisierung"],
-            "inventory_signals": ["Überbestände bei älteren Umrichter-Serien möglich"],
-            "financial_pressure": "mittel",
-            "assessment": "Solides Unternehmen mit Transformationsdruck durch Digitalisierung"
-        },
-        "sources": [
-            {"publisher": "lenze.com", "url": "https://lenze.com/de/unternehmen", "title": "Über Lenze", "accessed": "2024-01-15"}
-        ]
-    }, ensure_ascii=False, indent=2)
-    emit("CompanyIntelligence", company_json)
-    time.sleep(0.3)
-
-    # --- StrategicSignals ---
-    print(f"\n--- Step 3: StrategicSignals ---")
-    industry_json = json.dumps({
-        "industry_name": "Antriebstechnik & Industrieautomatisierung",
-        "market_size": "ca. 45 Mrd. EUR (Europa)",
-        "trend_direction": "stabil",
-        "growth_rate": "2-3% p.a.",
-        "key_trends": [
-            "Elektrifizierung und Energieeffizienz",
-            "Industrie 4.0 / IoT-Integration",
-            "Konsolidierung im Mittelstand"
-        ],
-        "overcapacity_signals": [
-            "Überkapazitäten bei konventionellen Antrieben",
-            "Lageraufbau durch Lieferkettenprobleme 2022-2023"
-        ],
-        "excess_stock_indicators": "Ältere Umrichter-Generationen werden durch neue Plattformen ersetzt",
-        "demand_outlook": "Stabil mit Verschiebung zu digitalen Lösungen",
-        "assessment": "Reifer Markt mit Transformationsdruck – Überbestände bei Legacy-Produkten wahrscheinlich",
-        "sources": []
-    }, ensure_ascii=False, indent=2)
-    emit("StrategicSignals", industry_json)
-    time.sleep(0.3)
-
-    # --- MarketNetwork ---
-    print(f"\n--- Step 4: MarketNetwork ---")
-    market_json = json.dumps({
-        "target_company": "Lenze SE",
-        "peer_competitors": {
-            "companies": [
-                {"name": "SEW-Eurodrive", "website": "sew-eurodrive.de", "city": "Bruchsal", "country": "DE", "relevance": "Direkter Wettbewerber bei Getriebemotoren", "matching_products": ["Getriebemotoren", "Frequenzumrichter"], "evidence_tier": "qualified"},
-                {"name": "Nord Drivesystems", "website": "nord.com", "city": "Bargteheide", "country": "DE", "relevance": "Wettbewerber bei Antriebstechnik", "matching_products": ["Frequenzumrichter", "Getriebe"], "evidence_tier": "qualified"}
-            ],
-            "assessment": "Starke Peer-Ebene mit potenziellem Interesse an Einzelteilen",
-            "sources": []
-        },
-        "downstream_buyers": {
-            "companies": [
-                {"name": "Krones AG", "website": "krones.com", "city": "Neutraubling", "country": "DE", "relevance": "Setzt Lenze-Antriebe in Abfüllanlagen ein", "matching_products": ["Servomotoren", "Umrichter"], "evidence_tier": "qualified"},
-                {"name": "Multivac", "website": "multivac.com", "city": "Wolfertschwenden", "country": "DE", "relevance": "Verpackungsmaschinen mit Lenze-Komponenten", "matching_products": ["Servomotoren", "Steuerungen"], "evidence_tier": "candidate"}
-            ],
-            "assessment": "Breite Abnehmerbasis im Maschinenbau",
-            "sources": []
-        },
-        "service_providers": {
-            "companies": [
-                {"name": "Gefran Deutschland", "website": "gefran.com", "city": "Seligenstadt", "country": "DE", "relevance": "Service und Wartung von Antriebssystemen", "matching_products": ["Ersatzteile Umrichter"], "evidence_tier": "candidate"}
-            ],
-            "assessment": "Service-Markt vorhanden aber schwer quantifizierbar",
-            "sources": []
-        },
-        "cross_industry_buyers": {
-            "companies": [
-                {"name": "Jungheinrich AG", "website": "jungheinrich.de", "city": "Hamburg", "country": "DE", "relevance": "Intralogistik – könnte Antriebskomponenten für Flurförderzeuge nutzen", "matching_products": ["Getriebemotoren", "Umrichter"], "evidence_tier": "candidate"}
-            ],
-            "assessment": "Cross-Industry-Potenzial in Intralogistik und Medizintechnik",
-            "sources": []
-        }
-    }, ensure_ascii=False, indent=2)
-    emit("MarketNetwork", market_json)
-    time.sleep(0.3)
-
-    # --- EvidenceQA ---
-    print(f"\n--- Step 5: EvidenceQA ---")
-    qa_json = json.dumps({
-        "validated_agents": ["Concierge", "CompanyIntelligence", "StrategicSignals", "MarketNetwork"],
-        "evidence_health": "mittel",
-        "open_gaps": [
-            "Umsatzzahlen nicht aus Primärquelle verifiziert",
-            "Service-Provider-Ebene dünn besetzt",
-            "Cross-Industry Buyer nur 1 Kandidat"
-        ],
-        "recommendations": [
-            "Jahresbericht oder Bundesanzeiger für Umsatzverifikation prüfen",
-            "Service-Provider-Recherche vertiefen"
-        ]
-    }, ensure_ascii=False, indent=2)
-    emit("EvidenceQA", qa_json)
-    time.sleep(0.3)
-
-    # --- Synthesis ---
-    print(f"\n--- Step 6: Synthesis ---")
-    synthesis_json = json.dumps({
-        "target_company": "Lenze SE",
-        "executive_summary": "Lenze SE ist ein etablierter Hersteller von Antriebs- und Automatisierungstechnik mit Sitz in Aerzen. Das Unternehmen befindet sich in einer Transformationsphase mit Fokus auf Digitalisierung. Überbestände bei älteren Produktgenerationen sind wahrscheinlich.",
-        "liquisto_service_relevance": [
-            {"service_area": "Excess Inventory", "relevance": "hoch", "reasoning": "Produktgenerationswechsel bei Umrichtern erzeugt wahrscheinlich Überbestände. Lenze hat ein breites Produktportfolio mit Legacy-Serien."},
-            {"service_area": "Repurposing", "relevance": "mittel", "reasoning": "Einzelteile älterer Serien könnten für Peer-Konkurrenten oder Service-Firmen interessant sein."},
-            {"service_area": "Analytics", "relevance": "mittel", "reasoning": "Bei ca. 4.000 Mitarbeitern und globalem Vertrieb könnte Value-Chain-Analytics Mehrwert bieten."}
-        ],
-        "case_assessments": [
-            {
-                "option": "kaufen",
-                "summary": "Direktkauf von Überbeständen",
-                "arguments": [
-                    {"argument": "Starke Peer-Ebene (SEW, Nord) mit potenziellem Einzelteil-Interesse", "direction": "pro", "based_on": "MarketNetwork: 2 qualifizierte Peer-Konkurrenten"},
-                    {"argument": "Breite Abnehmerbasis im Maschinenbau (Krones, Multivac)", "direction": "pro", "based_on": "MarketNetwork: Downstream Buyers"},
-                    {"argument": "Umsatzzahlen nicht verifiziert – Risiko bei Volumeneinschätzung", "direction": "contra", "based_on": "EvidenceQA: Umsatz nicht aus Primärquelle"},
-                    {"argument": "Service-Provider-Ebene dünn – Ersatzteil-Nachfrage schwer einschätzbar", "direction": "contra", "based_on": "EvidenceQA: Service-Provider dünn besetzt"}
-                ]
-            },
-            {
-                "option": "kommission",
-                "summary": "Kommissionsmodell für schrittweisen Abverkauf",
-                "arguments": [
-                    {"argument": "Geringeres Risiko bei unsicherer Nachfrage-Quantifizierung", "direction": "pro", "based_on": "EvidenceQA: Mehrere offene Lücken"},
-                    {"argument": "Lenze behält Eigentum – einfacherer Einstieg in Geschäftsbeziehung", "direction": "pro", "based_on": "Allgemeine Kommissionsvorteile"},
-                    {"argument": "Niedrigere Marge für Liquisto", "direction": "contra", "based_on": "Geschäftsmodell-Logik"}
-                ]
-            },
-            {
-                "option": "ablehnen",
-                "summary": "Kein Engagement",
-                "arguments": [
-                    {"argument": "Nur 1 Cross-Industry Kandidat – begrenztes Alternativmarkt-Potenzial", "direction": "pro", "based_on": "MarketNetwork: Cross-Industry dünn"},
-                    {"argument": "Starke Peer- und Abnehmer-Ebene spricht gegen Ablehnung", "direction": "contra", "based_on": "MarketNetwork: 4+ identifizierte Käufer"}
-                ]
-            }
-        ],
-        "buyer_market_summary": "Insgesamt 6 potenzielle Käufer identifiziert. Peer-Ebene und Abnehmer-Ebene sind solide besetzt. Service- und Cross-Industry-Ebene brauchen weitere Recherche.",
-        "total_peer_competitors": 2,
-        "total_downstream_buyers": 2,
-        "total_service_providers": 1,
-        "total_cross_industry_buyers": 1,
-        "key_risks": [
-            "Umsatz/Finanzdaten nicht aus Primärquelle verifiziert",
-            "Überbestandssituation ist Annahme, nicht bestätigt",
-            "Service-Markt schwer quantifizierbar"
-        ],
-        "next_steps": [
-            "Im Termin: Überbestandssituation direkt ansprechen",
-            "Produktkatalog der Legacy-Serien anfragen",
-            "Kontakt zu Einkauf/Supply Chain herstellen"
-        ],
-        "sources": []
-    }, ensure_ascii=False, indent=2)
-    emit("Synthesis", synthesis_json)
-    time.sleep(0.3)
-
-    # --- Admin terminates ---
-    emit("Admin", "TERMINATE")
-    emit("System", "Chat beendet. 8 Nachrichten.", "debug")
-
-    # --- Test: Extract pipeline data ---
-    print(f"\n{'=' * 60}")
-    print("TESTING: _extract_pipeline_data()")
-    pipeline_data = _extract_pipeline_data(messages, "Lenze SE")
-    for key, val in pipeline_data.items():
-        status = "✅ filled" if val else "❌ empty"
-        print(f"  {key:25s} {status}")
-
-    # --- Test: JSON parsing ---
-    print(f"\n{'=' * 60}")
-    print("TESTING: _try_parse_json()")
-    test_cases = [
-        ('direct json', '{"key": "value"}'),
-        ('markdown fence', '```json\n{"key": "value"}\n```'),
-        ('text + json', 'Here is the result:\n{"key": "value"}\nDone.'),
-        ('no json', 'This is just text'),
-        ('empty', ''),
-    ]
-    for label, text in test_cases:
-        result = _try_parse_json(text)
-        status = "✅" if (result is not None) == (label != "no json" and label != "empty") else "❌"
-        print(f"  {status} {label:20s} -> {result}")
-
-    # --- Test: PDF generation ---
-    print(f"\n{'=' * 60}")
-    print("TESTING: PDF generation")
-    try:
-        pdf_de = generate_pdf(pipeline_data, lang="de")
-        print(f"  ✅ PDF DE: {len(pdf_de)} bytes")
-    except Exception as e:
-        print(f"  ❌ PDF DE failed: {e}")
-
-    try:
-        pdf_en = generate_pdf(pipeline_data, lang="en")
-        print(f"  ✅ PDF EN: {len(pdf_en)} bytes")
-    except Exception as e:
-        print(f"  ❌ PDF EN failed: {e}")
-
-    # Save test PDFs
-    out = Path("artifacts/test")
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "test_report_DE.pdf").write_bytes(pdf_de)
-    (out / "test_report_EN.pdf").write_bytes(pdf_en)
-    print(f"  📄 Saved to: {out.resolve()}")
-
-    print(f"\n{'=' * 60}")
+    print("\n" + "=" * 60)
     print("ALL TESTS PASSED ✅")
-    print(f"{'=' * 60}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

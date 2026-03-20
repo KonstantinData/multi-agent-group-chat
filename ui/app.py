@@ -1,6 +1,7 @@
 """Liquisto Market Intelligence Pipeline – Streamlit UI."""
 from __future__ import annotations
 
+import json
 import sys
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ os.chdir(_PROJECT_ROOT)
 
 import threading
 import time
-from datetime import datetime, timezone
+from queue import Empty, Queue
 
 import streamlit as st
 
@@ -24,8 +25,10 @@ st.set_page_config(
     layout="wide",
 )
 
-from src.pipeline_runner import run_pipeline, AGENT_META, PIPELINE_STEPS
+from src.pipeline_runner import run_pipeline, AGENT_META, PIPELINE_STEPS, _extract_pipeline_data
 from src.exporters.pdf_report import generate_pdf
+
+_RUNS_DIR = Path(_PROJECT_ROOT) / "artifacts" / "runs"
 
 
 # --- Session State Init ---
@@ -38,14 +41,152 @@ def _init_state():
         "messages": [],
         "current_agent": None,
         "pipeline_data": {},
+        "usage": {},
+        "budget": {},
         "run_id": None,
         "error": None,
+        "worker_queue": None,
+        "loaded_run_notice": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 _init_state()
+
+
+def _drain_worker_queue() -> None:
+    """Apply thread-produced events to session state from the main Streamlit run."""
+    worker_queue = st.session_state.worker_queue
+    if worker_queue is None:
+        return
+
+    while True:
+        try:
+            item = worker_queue.get_nowait()
+        except Empty:
+            break
+
+        event_type = item.get("event")
+        if event_type == "message":
+            payload = item["payload"]
+            st.session_state.messages.append(payload)
+            st.session_state.current_agent = payload.get("agent")
+        elif event_type == "result":
+            payload = item["payload"]
+            st.session_state.pipeline_data = payload["pipeline_data"]
+            st.session_state.usage = payload.get("usage", {})
+            st.session_state.budget = payload.get("budget", {})
+            st.session_state.run_id = payload["run_id"]
+            st.session_state.error = None
+            st.session_state.done = True
+            st.session_state.running = False
+            st.session_state.pipeline_started = False
+            st.session_state.worker_queue = None
+        elif event_type == "error":
+            st.session_state.error = item["payload"]
+            st.session_state.done = True
+            st.session_state.running = False
+            st.session_state.pipeline_started = False
+            st.session_state.worker_queue = None
+
+
+_drain_worker_queue()
+
+
+def _message_preview(content: str, limit: int = 140) -> str:
+    text = (content or "").replace("\n", " ").strip()
+    if not text:
+        return "(leer)"
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _render_message_feed(messages: list[dict], *, live: bool) -> None:
+    ordered_messages = list(reversed(messages)) if live else messages
+
+    for msg in ordered_messages:
+        agent = msg.get("agent", "?")
+        meta = msg.get("meta", {})
+        content = msg.get("content", "") or ""
+        ts = msg.get("timestamp", "")[:19]
+        msg_type = msg.get("type", "agent_message")
+
+        if msg_type == "debug":
+            badge = "🔧 Debug"
+        elif msg_type == "error":
+            badge = "❌ Fehler"
+        else:
+            badge = f"{meta.get('icon', '❓')} {agent}"
+
+        title = f"{badge} · {ts} · {_message_preview(content)}"
+        with st.expander(title, expanded=live and msg_type == "error"):
+            if live:
+                st.caption(f"Agent: {agent}")
+            st.code(content[:12000] if len(content) > 12000 else content, language="json")
+
+
+def _progress_agent(agent: str | None) -> str | None:
+    if not agent:
+        return None
+    if agent.endswith("Critic"):
+        return agent.removesuffix("Critic")
+    return agent
+
+
+def _latest_run_dir() -> Path | None:
+    if not _RUNS_DIR.exists():
+        return None
+    runs = [path for path in _RUNS_DIR.iterdir() if path.is_dir()]
+    if not runs:
+        return None
+    return max(runs, key=lambda path: path.stat().st_mtime)
+
+
+def _load_artifact_run(run_dir: Path) -> dict:
+    run_meta_path = run_dir / "run_meta.json"
+    chat_history_path = run_dir / "chat_history.json"
+    pipeline_data_path = run_dir / "pipeline_data.json"
+
+    run_meta = json.loads(run_meta_path.read_text(encoding="utf-8")) if run_meta_path.exists() else {}
+    raw_messages = json.loads(chat_history_path.read_text(encoding="utf-8"))
+
+    timestamp = run_meta.get("timestamp", "")
+    normalized_messages = []
+    ui_messages = []
+    for msg in raw_messages:
+        agent = msg.get("name", msg.get("role", "unknown"))
+        content = msg.get("content", "") or ""
+        normalized_messages.append({"agent": agent, "content": content})
+        ui_messages.append(
+            {
+                "type": "agent_message",
+                "agent": agent,
+                "content": content,
+                "timestamp": timestamp,
+                "meta": AGENT_META.get(agent, {"icon": "⚙️", "color": "#adb5bd"}),
+            }
+        )
+
+    if pipeline_data_path.exists():
+        pipeline_data = json.loads(pipeline_data_path.read_text(encoding="utf-8"))
+    else:
+        pipeline_data = _extract_pipeline_data(normalized_messages)
+    target_company = (
+        pipeline_data.get("company_profile", {}).get("company_name")
+        or pipeline_data.get("synthesis", {}).get("target_company")
+        or ""
+    )
+
+    return {
+        "run_id": run_meta.get("run_id", run_dir.name),
+        "messages": ui_messages,
+        "pipeline_data": pipeline_data,
+        "usage": run_meta.get("usage", {}),
+        "budget": run_meta.get("budget", {}),
+        "input_company": target_company,
+    }
 
 
 # --- Sidebar ---
@@ -65,7 +206,20 @@ with st.sidebar:
         type="primary",
     )
 
-    if st.session_state.done:
+    latest_run = _latest_run_dir()
+    if latest_run is not None:
+        st.markdown("---")
+        st.markdown("### Vorhandene Artefakte")
+        st.caption(f"Letzter Run: `{latest_run.name}`")
+        load_latest_btn = st.button(
+            "🗂️ Letzten Run laden",
+            disabled=st.session_state.running,
+            use_container_width=True,
+        )
+    else:
+        load_latest_btn = False
+
+    if st.session_state.done and not st.session_state.error:
         st.markdown("---")
         st.markdown("### 📥 Report Download")
 
@@ -73,7 +227,7 @@ with st.sidebar:
         st.download_button(
             "📄 PDF Deutsch",
             data=pdf_de,
-            file_name=f"liquisto_briefing_{company_name.replace(' ', '_')}_DE.pdf",
+            file_name=f"liquisto_briefing_{st.session_state.get('input_company', company_name).replace(' ', '_')}_DE.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
@@ -82,7 +236,7 @@ with st.sidebar:
         st.download_button(
             "📄 PDF English",
             data=pdf_en,
-            file_name=f"liquisto_briefing_{company_name.replace(' ', '_')}_EN.pdf",
+            file_name=f"liquisto_briefing_{st.session_state.get('input_company', company_name).replace(' ', '_')}_EN.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
@@ -107,10 +261,40 @@ if start_btn:
     st.session_state.messages = []
     st.session_state.current_agent = None
     st.session_state.pipeline_data = {}
+    st.session_state.usage = {}
+    st.session_state.budget = {}
     st.session_state.error = None
     st.session_state.input_company = company_name
     st.session_state.input_domain = web_domain
+    st.session_state.worker_queue = Queue()
+    st.session_state.loaded_run_notice = None
     st.rerun()
+
+if load_latest_btn and latest_run is not None:
+    try:
+        loaded_run = _load_artifact_run(latest_run)
+        st.session_state.running = False
+        st.session_state.done = True
+        st.session_state.pipeline_started = False
+        st.session_state.messages = loaded_run["messages"]
+        st.session_state.current_agent = loaded_run["messages"][-1]["agent"] if loaded_run["messages"] else None
+        st.session_state.pipeline_data = loaded_run["pipeline_data"]
+        st.session_state.usage = loaded_run.get("usage", {})
+        st.session_state.budget = loaded_run.get("budget", {})
+        st.session_state.run_id = loaded_run["run_id"]
+        st.session_state.error = None
+        st.session_state.worker_queue = None
+        if loaded_run["input_company"]:
+            st.session_state.input_company = loaded_run["input_company"]
+        st.session_state.loaded_run_notice = loaded_run["run_id"]
+        st.rerun()
+    except Exception as exc:
+        st.session_state.error = f"Artifact-Run konnte nicht geladen werden: {exc}"
+        st.session_state.done = True
+        st.session_state.running = False
+        st.session_state.pipeline_started = False
+        st.session_state.worker_queue = None
+        st.rerun()
 
 if st.session_state.running and not st.session_state.done:
     # --- Progress Section ---
@@ -139,9 +323,10 @@ if st.session_state.running and not st.session_state.done:
     chat_container = st.container(height=500)
 
     # Run pipeline in background
+    worker_queue = st.session_state.worker_queue
+
     def _on_message(event):
-        st.session_state.messages.append(event)
-        st.session_state.current_agent = event.get("agent")
+        worker_queue.put({"event": "message", "payload": event})
 
     _company = st.session_state.input_company
     _domain = st.session_state.input_domain
@@ -153,13 +338,9 @@ if st.session_state.running and not st.session_state.done:
                 web_domain=_domain,
                 on_message=_on_message,
             )
-            st.session_state.pipeline_data = result["pipeline_data"]
-            st.session_state.run_id = result["run_id"]
+            worker_queue.put({"event": "result", "payload": result})
         except Exception as e:
-            st.session_state.error = str(e)
-        finally:
-            st.session_state.done = True
-            st.session_state.running = False
+            worker_queue.put({"event": "error", "payload": str(e)})
 
     # Start pipeline thread ONCE
     if not st.session_state.pipeline_started:
@@ -167,10 +348,15 @@ if st.session_state.running and not st.session_state.done:
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
+    _drain_worker_queue()
+
     # Show current progress snapshot
     agent_order = [name for name, _ in PIPELINE_STEPS]
     msgs = st.session_state.messages
-    current = st.session_state.current_agent
+    current = _progress_agent(st.session_state.current_agent)
+
+    if st.session_state.done:
+        st.rerun()
 
     if current and current in agent_order:
         idx = agent_order.index(current)
@@ -195,156 +381,164 @@ if st.session_state.running and not st.session_state.done:
                 f"<div style='font-size:11px'>{label}</div></div>",
                 unsafe_allow_html=True,
             )
+    else:
+        status_text.markdown("**Aktiver Agent:** Initialisierung...")
 
     # Render all messages so far
+    st.caption(f"Live-Feed aktiv · {len(msgs)} Nachrichten")
     with chat_container:
-        for msg in msgs:
-            agent = msg.get("agent", "?")
-            meta = msg.get("meta", {})
-            icon = meta.get("icon", "❓")
-            color = meta.get("color", "#000")
-            content = msg.get("content", "")
-            ts = msg.get("timestamp", "")[:19]
-            msg_type = msg.get("type", "agent_message")
-            display = content[:800] + "\n... (truncated)" if len(content) > 800 else content
+        _render_message_feed(msgs, live=True)
 
-            if msg_type == "debug":
-                bg = "#e8f4fd"
-                icon = "🔧"
-            elif msg_type == "error":
-                bg = "#fde8e8"
-                icon = "❌"
-            else:
-                bg = "#fafafa"
-
-            st.markdown(
-                f"<div style='border-left:3px solid {color};padding:8px 12px;"
-                f"margin:4px 0;background:{bg};border-radius:4px'>"
-                f"<strong>{icon} {agent}</strong> "
-                f"<small style='color:#999'>{ts}</small><br>"
-                f"<pre style='white-space:pre-wrap;font-size:12px;margin:4px 0 0 0'>"
-                f"{display}</pre></div>",
-                unsafe_allow_html=True,
-            )
-
-    # Auto-refresh every 2 seconds while running
-    time.sleep(2)
+    # Auto-refresh while running so the feed advances without user input.
+    time.sleep(1)
     st.rerun()
 
 elif st.session_state.done:
     # --- Results View ---
-    st.success(f"✅ Pipeline abgeschlossen – Run ID: {st.session_state.run_id}")
+    if st.session_state.error:
+        st.error(f"Pipeline fehlgeschlagen: {st.session_state.error}")
+        st.caption("Der Lauf wurde nicht als erfolgreich markiert. Unten steht der Chat-Log zur Diagnose.")
 
-    data = st.session_state.pipeline_data
+        validation_errors = st.session_state.pipeline_data.get("validation_errors", [])
+        if validation_errors:
+            st.markdown("### Validierungsfehler")
+            for item in validation_errors:
+                st.warning(f"{item.get('agent', '?')} / {item.get('section', '?')}: {item.get('details', 'n/v')}")
 
-    tab_summary, tab_company, tab_industry, tab_buyers, tab_qa, tab_chat = st.tabs([
-        "📋 Briefing", "🏢 Firmenprofil", "📡 Branche", "🌐 Käufer", "🔍 Evidenz", "💬 Chat-Log"
-    ])
+        st.markdown("### Chat-Log")
+        _render_message_feed(st.session_state.messages, live=False)
+    else:
+        st.success(f"✅ Pipeline abgeschlossen – Run ID: {st.session_state.run_id}")
+        if st.session_state.loaded_run_notice == st.session_state.run_id:
+            st.info("Diese Ansicht wurde aus dem zuletzt gespeicherten Artifact-Run geladen.")
 
-    with tab_summary:
-        synthesis = data.get("synthesis", {})
-        st.markdown("### Executive Summary")
-        st.write(synthesis.get("executive_summary", "Keine Daten"))
+        data = st.session_state.pipeline_data
+        usage = st.session_state.usage if isinstance(st.session_state.usage, dict) else {}
+        usage_total = usage.get("total", {}) if isinstance(usage, dict) else {}
+        budget = st.session_state.budget if isinstance(st.session_state.budget, dict) else {}
+        validation_errors = data.get("validation_errors", [])
+        if validation_errors:
+            st.warning("Einige Agentenantworten konnten nicht gegen die Schemas validiert werden. Die betroffenen Abschnitte wurden verworfen.")
 
-        st.markdown("### Liquisto Service-Relevanz")
-        for item in synthesis.get("liquisto_service_relevance", []):
-            if isinstance(item, dict):
-                rel = item.get("relevance", "?")
-                color_map = {"hoch": "🟢", "mittel": "🟡", "niedrig": "🔴", "unklar": "⚪"}
-                dot = color_map.get(rel.lower(), "⚪")
-                st.markdown(f"**{dot} {item.get('service_area', '?')}** – {rel}")
-                st.caption(item.get("reasoning", ""))
+        if usage_total:
+            col_cost, col_prompt, col_completion, col_total = st.columns(4)
+            col_cost.metric("Kosten", f"${usage_total.get('total_cost', 0.0):.4f}")
+            col_prompt.metric("Prompt-Tokens", f"{usage_total.get('prompt_tokens', 0):,}")
+            col_completion.metric("Completion-Tokens", f"{usage_total.get('completion_tokens', 0):,}")
+            col_total.metric("Total Tokens", f"{usage_total.get('total_tokens', 0):,}")
+            if budget:
+                st.caption(
+                    "Budgetverbrauch: "
+                    f"{budget.get('groupchat_rounds_used', 0)}/{budget.get('max_groupchat_rounds', 0)} GroupChat-Runden, "
+                    f"{budget.get('tool_calls_used', 0)}/{budget.get('max_tool_calls', 0)} Tool-Calls, "
+                    f"{budget.get('max_stage_attempts', 0)} max. Versuche je Stage, "
+                    f"{budget.get('elapsed_seconds', 0)}s Laufzeit."
+                )
 
-        st.markdown("### Einschätzung je Option")
-        for case in synthesis.get("case_assessments", []):
-            if isinstance(case, dict):
-                with st.expander(f"**{case.get('option', '?').upper()}** – {case.get('summary', '')}"):
-                    for arg in case.get("arguments", []):
-                        if isinstance(arg, dict):
-                            d = arg.get("direction", "").upper()
-                            icon = "✅" if d == "PRO" else "❌"
-                            st.markdown(f"{icon} **{d}:** {arg.get('argument', '')}")
-                            st.caption(f"Basierend auf: {arg.get('based_on', 'n/v')}")
+        tab_summary, tab_company, tab_industry, tab_buyers, tab_qa, tab_chat = st.tabs([
+            "📋 Briefing", "🏢 Firmenprofil", "📡 Branche", "🌐 Käufer", "🔍 Evidenz", "💬 Chat-Log"
+        ])
 
-    with tab_company:
-        profile = data.get("company_profile", {})
-        if profile:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"**Unternehmen:** {profile.get('company_name', 'n/v')}")
-                st.markdown(f"**Rechtsform:** {profile.get('legal_form', 'n/v')}")
-                st.markdown(f"**Gegründet:** {profile.get('founded', 'n/v')}")
-                st.markdown(f"**Hauptsitz:** {profile.get('headquarters', 'n/v')}")
-            with col2:
-                st.markdown(f"**Branche:** {profile.get('industry', 'n/v')}")
-                st.markdown(f"**Mitarbeiter:** {profile.get('employees', 'n/v')}")
-                st.markdown(f"**Umsatz:** {profile.get('revenue', 'n/v')}")
-                st.markdown(f"**Website:** {profile.get('website', 'n/v')}")
+        with tab_summary:
+            synthesis = data.get("synthesis", {})
+            st.markdown("### Executive Summary")
+            st.write(synthesis.get("executive_summary", "Keine Daten"))
 
-            products = profile.get("products_and_services", [])
-            if products:
-                st.markdown("**Produkte & Dienstleistungen:**")
-                for p in products:
-                    st.markdown(f"- {p}")
-        else:
-            st.info("Keine Profildaten verfügbar")
+            st.markdown("### Liquisto Service-Relevanz")
+            for item in synthesis.get("liquisto_service_relevance", []):
+                if isinstance(item, dict):
+                    rel = item.get("relevance", "?")
+                    color_map = {"hoch": "🟢", "mittel": "🟡", "niedrig": "🔴", "unklar": "⚪"}
+                    dot = color_map.get(rel.lower(), "⚪")
+                    st.markdown(f"**{dot} {item.get('service_area', '?')}** – {rel}")
+                    st.caption(item.get("reasoning", ""))
 
-    with tab_industry:
-        industry = data.get("industry_analysis", {})
-        if industry:
-            st.markdown(f"**Branche:** {industry.get('industry_name', 'n/v')}")
-            st.markdown(f"**Marktgröße:** {industry.get('market_size', 'n/v')}")
-            st.markdown(f"**Trend:** {industry.get('trend_direction', 'n/v')}")
-            st.markdown(f"**Wachstum:** {industry.get('growth_rate', 'n/v')}")
-            st.markdown(f"**Einschätzung:** {industry.get('assessment', 'n/v')}")
-        else:
-            st.info("Keine Branchendaten verfügbar")
+            st.markdown("### Einschätzung je Option")
+            for case in synthesis.get("case_assessments", []):
+                if isinstance(case, dict):
+                    with st.expander(f"**{case.get('option', '?').upper()}** – {case.get('summary', '')}"):
+                        for arg in case.get("arguments", []):
+                            if isinstance(arg, dict):
+                                d = arg.get("direction", "").upper()
+                                icon = "✅" if d == "PRO" else "❌"
+                                st.markdown(f"{icon} **{d}:** {arg.get('argument', '')}")
+                                st.caption(f"Basierend auf: {arg.get('based_on', 'n/v')}")
 
-    with tab_buyers:
-        market = data.get("market_network", {})
-        for tier_key, tier_label in [
-            ("peer_competitors", "🏭 Peer-Konkurrenten"),
-            ("downstream_buyers", "📦 Abnehmer"),
-            ("service_providers", "🔧 Service-Anbieter"),
-            ("cross_industry_buyers", "🔀 Cross-Industry Käufer"),
-        ]:
-            tier = market.get(tier_key, {})
-            if isinstance(tier, dict):
-                companies = tier.get("companies", [])
-                with st.expander(f"{tier_label} ({len(companies)})"):
-                    if tier.get("assessment"):
-                        st.caption(tier["assessment"])
-                    for buyer in companies:
-                        if isinstance(buyer, dict):
-                            st.markdown(
-                                f"- **{buyer.get('name', '?')}** "
-                                f"({buyer.get('city', '')}, {buyer.get('country', '')}) – "
-                                f"{buyer.get('relevance', '')}"
-                            )
+        with tab_company:
+            profile = data.get("company_profile", {})
+            if profile:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown(f"**Unternehmen:** {profile.get('company_name', 'n/v')}")
+                    st.markdown(f"**Rechtsform:** {profile.get('legal_form', 'n/v')}")
+                    st.markdown(f"**Gegründet:** {profile.get('founded', 'n/v')}")
+                    st.markdown(f"**Hauptsitz:** {profile.get('headquarters', 'n/v')}")
+                with col2:
+                    st.markdown(f"**Branche:** {profile.get('industry', 'n/v')}")
+                    st.markdown(f"**Mitarbeiter:** {profile.get('employees', 'n/v')}")
+                    st.markdown(f"**Umsatz:** {profile.get('revenue', 'n/v')}")
+                    st.markdown(f"**Website:** {profile.get('website', 'n/v')}")
 
-    with tab_qa:
-        qa = data.get("quality_review", {})
-        if qa:
-            st.markdown(f"**Evidenzqualität:** {qa.get('evidence_health', 'n/v')}")
-            gaps = qa.get("open_gaps", [])
-            if gaps:
-                st.markdown("**Offene Lücken:**")
-                for g in gaps:
-                    st.warning(g)
-        else:
-            st.info("Keine QA-Daten verfügbar")
+                products = profile.get("products_and_services", [])
+                if products:
+                    st.markdown("**Produkte & Dienstleistungen:**")
+                    for p in products:
+                        st.markdown(f"- {p}")
+            else:
+                st.info("Keine Profildaten verfügbar")
 
-    with tab_chat:
-        for msg in st.session_state.messages:
-            agent = msg.get("agent", "?")
-            meta = msg.get("meta", {})
-            content = msg.get("content", "")
-            ts = msg.get("timestamp", "")[:19]
-            st.markdown(
-                f"**{meta.get('icon', '❓')} {agent}** <small>({ts})</small>",
-                unsafe_allow_html=True,
-            )
-            st.code(content[:2000] if len(content) > 2000 else content, language="json")
+        with tab_industry:
+            industry = data.get("industry_analysis", {})
+            if industry:
+                st.markdown(f"**Branche:** {industry.get('industry_name', 'n/v')}")
+                st.markdown(f"**Marktgröße:** {industry.get('market_size', 'n/v')}")
+                st.markdown(f"**Trend:** {industry.get('trend_direction', 'n/v')}")
+                st.markdown(f"**Wachstum:** {industry.get('growth_rate', 'n/v')}")
+                st.markdown(f"**Einschätzung:** {industry.get('assessment', 'n/v')}")
+            else:
+                st.info("Keine Branchendaten verfügbar")
+
+        with tab_buyers:
+            market = data.get("market_network", {})
+            for tier_key, tier_label in [
+                ("peer_competitors", "🏭 Peer-Konkurrenten"),
+                ("downstream_buyers", "📦 Abnehmer"),
+                ("service_providers", "🔧 Service-Anbieter"),
+                ("cross_industry_buyers", "🔀 Cross-Industry Käufer"),
+            ]:
+                tier = market.get(tier_key, {})
+                if isinstance(tier, dict):
+                    companies = tier.get("companies", [])
+                    with st.expander(f"{tier_label} ({len(companies)})"):
+                        if tier.get("assessment"):
+                            st.caption(tier["assessment"])
+                        for buyer in companies:
+                            if isinstance(buyer, dict):
+                                st.markdown(
+                                    f"- **{buyer.get('name', '?')}** "
+                                    f"({buyer.get('city', '')}, {buyer.get('country', '')}) – "
+                                    f"{buyer.get('relevance', '')}"
+                                )
+
+        with tab_qa:
+            qa = data.get("quality_review", {})
+            if qa:
+                st.markdown(f"**Evidenzqualität:** {qa.get('evidence_health', 'n/v')}")
+                gaps = qa.get("open_gaps", [])
+                if gaps:
+                    st.markdown("**Offene Lücken:**")
+                    for g in gaps:
+                        st.warning(g)
+            else:
+                st.info("Keine QA-Daten verfügbar")
+
+            if validation_errors:
+                st.markdown("**Schema-Validierungsfehler:**")
+                for item in validation_errors:
+                    st.warning(f"{item.get('agent', '?')} / {item.get('section', '?')}: {item.get('details', 'n/v')}")
+
+        with tab_chat:
+            _render_message_feed(st.session_state.messages, live=False)
 
 else:
     # Landing page

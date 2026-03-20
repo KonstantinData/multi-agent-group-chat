@@ -30,7 +30,8 @@ check("Executable", lambda: sys.executable)
 print("\n2. Packages")
 for pkg, imp in [
     ("streamlit", "streamlit"),
-    ("autogen (pyautogen)", "autogen"),
+    ("autogen (ag2)", "autogen"),
+    ("openai", "openai"),
     ("pydantic", "pydantic"),
     ("python-dotenv", "dotenv"),
     ("fpdf2", "fpdf"),

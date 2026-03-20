@@ -14,6 +14,19 @@ class Source(BaseModel):
     accessed: str = ""
 
 
+class ConciergeOutput(BaseModel):
+    company_name: str
+    web_domain: str
+    language: str
+    observations: list[str] = Field(default_factory=list)
+
+
+class ReviewFeedback(BaseModel):
+    approved: bool = False
+    issues: list[str] = Field(default_factory=list)
+    revision_instructions: list[str] = Field(default_factory=list)
+
+
 class EvidenceTier(str, Enum):
     CANDIDATE = "candidate"
     QUALIFIED = "qualified"

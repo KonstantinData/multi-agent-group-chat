@@ -1,60 +1,62 @@
-"""Pydantic models for all structured pipeline outputs."""
+"""Pydantic schemas for the supervisor-centric pipeline."""
 from __future__ import annotations
 
-from enum import Enum
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import AliasChoices, BaseModel, Field
 
 
-# --- Shared ---
+class SourceRecord(BaseModel):
+    title: str = "n/v"
+    url: str = ""
+    source_type: str = "secondary"
+    summary: str = ""
 
-class Source(BaseModel):
-    publisher: str
-    url: str
-    title: str = ""
-    accessed: str = ""
-
-
-class ConciergeOutput(BaseModel):
-    company_name: str
-    web_domain: str
-    language: str
-    observations: list[str] = Field(default_factory=list)
-
-
-class ReviewFieldIssue(BaseModel):
-    field_path: str = ""
-    issue_type: str = "validation_error"
-    summary: str
-    recommendation: str = ""
-
-
-class ReviewFeedback(BaseModel):
-    approved: bool = False
-    issues: list[str] = Field(default_factory=list)
-    revision_instructions: list[str] = Field(default_factory=list)
-    field_issues: list[ReviewFieldIssue] = Field(default_factory=list)
-
-
-class RepairPlan(BaseModel):
-    producer_name: str
-    stage_key: str
-    primary_task: str
-    subtask_delta: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    done_when: list[str] = Field(default_factory=list)
-
-
-class EvidenceTier(str, Enum):
-    CANDIDATE = "candidate"
-    QUALIFIED = "qualified"
-    VERIFIED = "verified"
-
-
-# --- Step 2: Company Intelligence ---
 
 class KeyPerson(BaseModel):
-    name: str
-    role: str
+    name: str = "n/v"
+    role: str = "n/v"
+
+
+class ContactPerson(BaseModel):
+    name: str = "n/v"
+    firma: str = "n/v"
+    rolle_titel: str = "n/v"
+    funktion: str = "n/v"
+    senioritaet: str = "n/v"
+    standort: str = "n/v"
+    quelle: str = "n/v"
+    confidence: str = "inferred"
+    relevance_reason: str = "n/v"
+    suggested_outreach_angle: str = "n/v"
+
+
+class ContactIntelligenceSection(BaseModel):
+    contacts: list[ContactPerson] = Field(default_factory=list)
+    prioritized_contacts: list[ContactPerson] = Field(default_factory=list)
+    firms_searched: int = 0
+    contacts_found: int = 0
+    coverage_quality: str = "n/v"
+    narrative_summary: str = "n/v"
+    open_questions: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+class DomainReportSegment(BaseModel):
+    department: str = "n/v"
+    narrative_summary: str = "n/v"
+    confidence: str = "low"
+    key_findings: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+class BackRequest(BaseModel):
+    department: str = "n/v"
+    type: str = "clarify"
+    subject: str = "n/v"
+    context: str = "n/v"
+
 
 class EconomicSituation(BaseModel):
     revenue_trend: str = "n/v"
@@ -64,8 +66,9 @@ class EconomicSituation(BaseModel):
     financial_pressure: str = "n/v"
     assessment: str = "n/v"
 
+
 class CompanyProfile(BaseModel):
-    company_name: str
+    company_name: str = "n/v"
     legal_form: str = "n/v"
     founded: str = "n/v"
     headquarters: str = "n/v"
@@ -74,86 +77,61 @@ class CompanyProfile(BaseModel):
     employees: str = "n/v"
     revenue: str = "n/v"
     products_and_services: list[str] = Field(default_factory=list)
+    product_asset_scope: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("product_asset_scope", "product_material_relevance"),
+    )
     key_people: list[KeyPerson] = Field(default_factory=list)
-    description: str = ""
+    description: str = "n/v"
     economic_situation: EconomicSituation = Field(default_factory=EconomicSituation)
-    sources: list[Source] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
 
-
-# --- Step 3: Strategic Signals ---
-
-class TrendDirection(str, Enum):
-    GROWING = "wachsend"
-    STABLE = "stabil"
-    DECLINING = "schrumpfend"
-    UNCERTAIN = "unsicher"
 
 class IndustryAnalysis(BaseModel):
-    industry_name: str
+    industry_name: str = "n/v"
     market_size: str = "n/v"
-    trend_direction: TrendDirection = TrendDirection.UNCERTAIN
+    trend_direction: str = "n/v"
     growth_rate: str = "n/v"
     key_trends: list[str] = Field(default_factory=list)
     overcapacity_signals: list[str] = Field(default_factory=list)
     excess_stock_indicators: str = "n/v"
     demand_outlook: str = "n/v"
+    repurposing_signals: list[str] = Field(default_factory=list)
+    analytics_signals: list[str] = Field(default_factory=list)
     assessment: str = "n/v"
-    sources: list[Source] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
 
 
-# --- Step 4: Market Network (4 Buyer Tiers) ---
-
-class Buyer(BaseModel):
-    name: str
-    website: str = "n/v"
+class CompanyRecord(BaseModel):
+    name: str = "n/v"
     city: str = "n/v"
     country: str = "n/v"
-    relevance: str = ""
-    matching_products: list[str] = Field(default_factory=list)
-    evidence_tier: EvidenceTier = EvidenceTier.CANDIDATE
-    source: Source | None = None
+    relevance: str = "n/v"
 
-class PeerCompetitors(BaseModel):
-    """Competitors producing same/similar products – potential buyers of parts."""
-    companies: list[Buyer] = Field(default_factory=list)
-    assessment: str = "n/v"
-    sources: list[Source] = Field(default_factory=list)
 
-class DownstreamBuyers(BaseModel):
-    """Companies buying products from Intake + Peers, incl. spare-part users."""
-    companies: list[Buyer] = Field(default_factory=list)
+class MarketTier(BaseModel):
+    companies: list[CompanyRecord] = Field(default_factory=list)
     assessment: str = "n/v"
-    sources: list[Source] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
 
-class ServiceProviders(BaseModel):
-    """Service firms maintaining/repairing equipment – need spare parts."""
-    companies: list[Buyer] = Field(default_factory=list)
-    assessment: str = "n/v"
-    sources: list[Source] = Field(default_factory=list)
-
-class CrossIndustryBuyers(BaseModel):
-    """Companies from other industries that could use products/parts."""
-    companies: list[Buyer] = Field(default_factory=list)
-    assessment: str = "n/v"
-    sources: list[Source] = Field(default_factory=list)
 
 class MarketNetwork(BaseModel):
-    target_company: str
-    peer_competitors: PeerCompetitors = Field(default_factory=PeerCompetitors)
-    downstream_buyers: DownstreamBuyers = Field(default_factory=DownstreamBuyers)
-    service_providers: ServiceProviders = Field(default_factory=ServiceProviders)
-    cross_industry_buyers: CrossIndustryBuyers = Field(default_factory=CrossIndustryBuyers)
+    target_company: str = "n/v"
+    peer_competitors: MarketTier = Field(default_factory=MarketTier)
+    downstream_buyers: MarketTier = Field(default_factory=MarketTier)
+    service_providers: MarketTier = Field(default_factory=MarketTier)
+    cross_industry_buyers: MarketTier = Field(default_factory=MarketTier)
+    monetization_paths: list[str] = Field(default_factory=list)
+    redeployment_paths: list[str] = Field(default_factory=list)
 
 
-# --- Step 5: Evidence QA ---
-
-class QAGapDetail(BaseModel):
-    agent: str
-    field_path: str = ""
-    issue_type: str
-    severity: str = "significant"
-    summary: str
-    recommendation: str = ""
+class GapDetail(BaseModel):
+    agent: str = "n/v"
+    field_path: str = "*"
+    issue_type: str = "gap"
+    severity: str = "moderate"
+    summary: str = "n/v"
+    recommendation: str = "n/v"
 
 
 class QualityReview(BaseModel):
@@ -161,39 +139,106 @@ class QualityReview(BaseModel):
     evidence_health: str = "n/v"
     open_gaps: list[str] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
-    gap_details: list[QAGapDetail] = Field(default_factory=list)
+    gap_details: list[GapDetail] = Field(default_factory=list)
 
 
-# --- Step 6: Synthesis ---
+class ServiceRelevance(BaseModel):
+    service_area: str = "n/v"
+    relevance: str = "n/v"
+    reasoning: str = "n/v"
 
-class LiquistoCaseArgument(BaseModel):
-    """One pro/contra argument for a Liquisto option."""
-    argument: str
-    direction: str  # "pro" or "contra"
-    based_on: str   # which evidence supports this
 
-class LiquistoCaseAssessment(BaseModel):
-    """Assessment for one Liquisto option (Kaufen/Kommission/Ablehnen)."""
-    option: str  # "kaufen", "kommission", "ablehnen"
-    arguments: list[LiquistoCaseArgument] = Field(default_factory=list)
-    summary: str = ""
+class CaseArgument(BaseModel):
+    argument: str = "n/v"
+    direction: str = "pro"
+    based_on: str = "n/v"
 
-class LiquistServiceRelevance(BaseModel):
-    """Which of the 3 Liquisto service areas might be relevant and why."""
-    service_area: str  # "excess_inventory", "repurposing", "analytics"
-    relevance: str     # "hoch", "mittel", "niedrig", "unklar"
-    reasoning: str = ""
 
-class SynthesisReport(BaseModel):
-    target_company: str
-    executive_summary: str = ""
-    liquisto_service_relevance: list[LiquistServiceRelevance] = Field(default_factory=list)
-    case_assessments: list[LiquistoCaseAssessment] = Field(default_factory=list)
-    buyer_market_summary: str = ""
+class CaseAssessment(BaseModel):
+    option: str = "n/v"
+    arguments: list[CaseArgument] = Field(default_factory=list)
+    summary: str = "n/v"
+
+
+class Synthesis(BaseModel):
+    target_company: str = "n/v"
+    executive_summary: str = "n/v"
+    liquisto_service_relevance: list[ServiceRelevance] = Field(default_factory=list)
+    opportunity_assessment_summary: str = "n/v"
+    recommended_engagement_paths: list[str] = Field(default_factory=list)
+    case_assessments: list[CaseAssessment] = Field(default_factory=list)
+    buyer_market_summary: str = "n/v"
     total_peer_competitors: int = 0
     total_downstream_buyers: int = 0
     total_service_providers: int = 0
     total_cross_industry_buyers: int = 0
     key_risks: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
-    sources: list[Source] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+class ResearchReadiness(BaseModel):
+    usable: bool = False
+    score: int = 0
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ValidationErrorRecord(BaseModel):
+    agent: str = "n/v"
+    section: str = "n/v"
+    details: str = "n/v"
+
+
+class DepartmentTaskResult(BaseModel):
+    task_key: str = "n/v"
+    label: str = "n/v"
+    status: str = "pending"
+    accepted_points: list[str] = Field(default_factory=list)
+    open_points: list[str] = Field(default_factory=list)
+    summary: str = "n/v"
+
+
+class DepartmentPackage(BaseModel):
+    department: str = "n/v"
+    target_section: str = "n/v"
+    summary: str = "n/v"
+    section_payload: dict[str, Any] = Field(default_factory=dict)
+    completed_tasks: list[DepartmentTaskResult] = Field(default_factory=list)
+    accepted_points: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    visual_focus: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+    autogen_group: dict[str, Any] = Field(default_factory=dict)
+    report_segment: DomainReportSegment = Field(default_factory=DomainReportSegment)
+
+
+class FollowUpAnswer(BaseModel):
+    run_id: str = "n/v"
+    routed_to: str = "n/v"
+    question: str = "n/v"
+    answer: str = "n/v"
+    evidence_used: list[str] = Field(default_factory=list)
+    unresolved_points: list[str] = Field(default_factory=list)
+    requires_additional_research: bool = False
+
+
+class PipelineData(BaseModel):
+    company_profile: CompanyProfile = Field(default_factory=CompanyProfile)
+    industry_analysis: IndustryAnalysis = Field(default_factory=IndustryAnalysis)
+    market_network: MarketNetwork = Field(default_factory=MarketNetwork)
+    contact_intelligence: ContactIntelligenceSection = Field(default_factory=ContactIntelligenceSection)
+    quality_review: QualityReview = Field(default_factory=QualityReview)
+    synthesis: Synthesis = Field(default_factory=Synthesis)
+    research_readiness: ResearchReadiness = Field(default_factory=ResearchReadiness)
+    validation_errors: list[ValidationErrorRecord] = Field(default_factory=list)
+
+
+def validate_pipeline_data(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize pipeline payloads for exports and UI loading."""
+    model = PipelineData.model_validate(payload)
+    return model.model_dump(mode="json")
+
+
+def empty_pipeline_data() -> dict[str, Any]:
+    """Return a fully structured empty payload."""
+    return PipelineData().model_dump(mode="json")

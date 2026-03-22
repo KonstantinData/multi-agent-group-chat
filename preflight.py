@@ -75,11 +75,10 @@ def main() -> int:
     print("\n2. Packages")
     for pkg, imp in [
         ("streamlit", "streamlit"),
-        ("autogen (ag2)", "autogen"),
         ("openai", "openai"),
         ("pydantic", "pydantic"),
         ("python-dotenv", "dotenv"),
-        ("fpdf2", "fpdf"),
+        ("reportlab", "reportlab"),
     ]:
         check(pkg, lambda i=imp: (m := __import__(i)) and getattr(m, "__version__", "ok"), counters)
 

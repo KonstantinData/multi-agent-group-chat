@@ -1,830 +1,896 @@
-"""PDF report generator for Liquisto Market Intelligence briefings."""
+"""Generate a polished Liquisto briefing PDF."""
 from __future__ import annotations
 
-import io
-from datetime import datetime, timezone
+import copy
+import json
+from datetime import datetime
+from io import BytesIO
 from typing import Any
 
-from fpdf import FPDF
+from reportlab.graphics.shapes import Drawing, Rect, String
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
-# --- Translations ---
+PAGE_WIDTH, PAGE_HEIGHT = A4
 
-_T = {
-    "de": {
-        "title": "Liquisto Market Intelligence Briefing",
-        "generated": "Erstellt am",
-        "readiness_dashboard": "Ergebnisübersicht",
-        "card_company": "Firmenprofil",
-        "card_market": "Marktquellen",
-        "card_evidence": "Evidenz",
-        "card_buyers": "Käufer",
-        "visual_coverage": "Datenabdeckung",
-        "visual_company": "Firmenprofil",
-        "visual_market": "Marktbild",
-        "visual_buyers": "Käufernetzwerk",
-        "visual_decision": "Entscheidungsschema",
-        "metric_filled_fields": "gefüllte Felder",
-        "metric_external_sources": "externe Quellen",
-        "metric_tier_coverage": "Tier-Abdeckung",
-        "decision_signal": "Signal",
-        "exec_summary": "Zusammenfassung",
-        "company_profile": "Firmenprofil",
-        "field_company": "Unternehmen",
-        "field_legal_form": "Rechtsform",
-        "field_founded": "Gegründet",
-        "field_hq": "Hauptsitz",
-        "field_website": "Website",
-        "field_industry": "Branche",
-        "field_employees": "Mitarbeiter",
-        "field_revenue": "Umsatz",
-        "field_products": "Produkte & Dienstleistungen",
-        "field_key_people": "Schlüsselpersonen",
-        "economic_situation": "Wirtschaftslage",
-        "field_revenue_trend": "Umsatztrend",
-        "field_profitability": "Profitabilität",
-        "field_financial_pressure": "Finanzdruck",
-        "field_assessment": "Einschätzung",
-        "field_recent_events": "Aktuelle Ereignisse",
-        "field_inventory_signals": "Bestandssignale",
-        "industry_analysis": "Branchenanalyse",
-        "field_market_size": "Marktgröße",
-        "field_trend": "Trendrichtung",
-        "field_growth": "Wachstumsrate",
-        "field_demand": "Nachfrageausblick",
-        "field_overcapacity": "Überkapazitätssignale",
-        "field_excess_stock": "Überschussbestand-Indikatoren",
-        "field_key_trends": "Schlüsseltrends",
-        "buyer_network": "Käufernetzwerk",
-        "tier_peers": "Peer-Konkurrenten",
-        "tier_downstream": "Abnehmer",
-        "tier_service": "Service-Anbieter",
-        "tier_cross": "Cross-Industry Käufer",
-        "evidence_qa": "Recherchehinweise",
-        "field_evidence_health": "Evidenzqualität",
-        "field_open_gaps": "Offene Lücken",
-        "field_recommendations": "Empfehlungen",
-        "liquisto_relevance": "Liquisto Service-Relevanz",
-        "case_assessment": "Einschätzung je Option",
-        "option_kaufen": "Kaufen",
-        "option_kommission": "Kommission",
-        "option_ablehnen": "Ablehnen",
-        "pro": "PRO",
-        "contra": "CONTRA",
-        "based_on": "Basierend auf",
-        "buyer_summary": "Käufermarkt-Zusammenfassung",
-        "risks": "Risiken",
-        "next_steps": "Nächste Schritte",
-        "sources": "Quellen",
-        "no_data": "Keine Daten verfügbar",
-        "buyer_count": "Buyer-Anzahl",
-        "tier": "Tier",
-        "assessment": "Bewertung",
-        "result_table": "Ergebnistabelle",
-        "research_note": "Kurzer Recherchehinweis",
-        "service_area_excess_inventory": "Überbestände",
-        "service_area_repurposing": "Umnutzung",
-        "service_area_analytics": "Analytics",
-        "status_high": "hoch",
-        "status_medium": "mittel",
-        "status_low": "niedrig",
-        "status_unclear": "unklar",
-        "trend_uncertain": "unsicher",
-        "signal_pro": "pro-dominant",
-        "signal_contra": "contra-dominant",
-        "signal_mixed": "gemischt",
-        "summary_missing_market": "Für Marktgröße, Wachstum, Nachfrage und Überbestandslage liegen keine belastbaren externen Marktquellen vor.",
-        "summary_missing_buyers": "Für das Käufernetzwerk konnten keine belastbaren Buyer-, Wettbewerber- oder Service-Treffer validiert werden.",
-        "summary_missing_company": "Im Firmenprofil fehlen weiterhin zentrale Basisdaten.",
-        "summary_company_intro": "{company} ist im vorliegenden Datensatz als Anbieter von {industry} mit Fokus auf {products} erfasst.",
-        "summary_quality": "Die belastbare Evidenzlage ist derzeit {quality}.",
-        "main_sections_note": "Der Hauptteil dieses Reports fokussiert ausschließlich auf die recherchierten Ergebnisse.",
-    },
-    "en": {
-        "title": "Liquisto Market Intelligence Briefing",
-        "generated": "Generated on",
-        "readiness_dashboard": "Readiness Dashboard",
-        "card_company": "Company Profile",
-        "card_market": "Market Sources",
-        "card_evidence": "Evidence",
-        "card_buyers": "Buyers",
-        "visual_coverage": "Coverage Snapshot",
-        "visual_company": "Company Profile",
-        "visual_market": "Market Evidence",
-        "visual_buyers": "Buyer Network",
-        "visual_decision": "Decision Schema",
-        "metric_filled_fields": "filled fields",
-        "metric_external_sources": "external sources",
-        "metric_tier_coverage": "tier coverage",
-        "decision_signal": "Signal",
-        "exec_summary": "Executive Summary",
-        "company_profile": "Company Profile",
-        "field_company": "Company",
-        "field_legal_form": "Legal Form",
-        "field_founded": "Founded",
-        "field_hq": "Headquarters",
-        "field_website": "Website",
-        "field_industry": "Industry",
-        "field_employees": "Employees",
-        "field_revenue": "Revenue",
-        "field_products": "Products & Services",
-        "field_key_people": "Key People",
-        "economic_situation": "Economic Situation",
-        "field_revenue_trend": "Revenue Trend",
-        "field_profitability": "Profitability",
-        "field_financial_pressure": "Financial Pressure",
-        "field_assessment": "Assessment",
-        "field_recent_events": "Recent Events",
-        "field_inventory_signals": "Inventory Signals",
-        "industry_analysis": "Industry Analysis",
-        "field_market_size": "Market Size",
-        "field_trend": "Trend Direction",
-        "field_growth": "Growth Rate",
-        "field_demand": "Demand Outlook",
-        "field_overcapacity": "Overcapacity Signals",
-        "field_excess_stock": "Excess Stock Indicators",
-        "field_key_trends": "Key Trends",
-        "buyer_network": "Buyer Network",
-        "tier_peers": "Peer Competitors",
-        "tier_downstream": "Downstream Buyers",
-        "tier_service": "Service Providers",
-        "tier_cross": "Cross-Industry Buyers",
-        "evidence_qa": "Research Notes",
-        "field_evidence_health": "Evidence Health",
-        "field_open_gaps": "Open Gaps",
-        "field_recommendations": "Recommendations",
-        "liquisto_relevance": "Liquisto Service Relevance",
-        "case_assessment": "Case Assessment per Option",
-        "option_kaufen": "Buy",
-        "option_kommission": "Commission",
-        "option_ablehnen": "Decline",
-        "pro": "PRO",
-        "contra": "CONTRA",
-        "based_on": "Based on",
-        "buyer_summary": "Buyer Market Summary",
-        "risks": "Risks",
-        "next_steps": "Next Steps",
-        "sources": "Sources",
-        "no_data": "No data available",
-        "buyer_count": "Buyer Count",
-        "tier": "Tier",
-        "assessment": "Assessment",
-        "result_table": "Results Table",
-        "research_note": "Short research note",
-        "service_area_excess_inventory": "Excess Inventory",
-        "service_area_repurposing": "Repurposing",
-        "service_area_analytics": "Analytics",
-        "status_high": "high",
-        "status_medium": "medium",
-        "status_low": "low",
-        "status_unclear": "unclear",
-        "trend_uncertain": "uncertain",
-        "signal_pro": "pro-dominant",
-        "signal_contra": "contra-dominant",
-        "signal_mixed": "mixed",
-        "summary_missing_market": "No credible external market sources are available for market size, growth, demand, or excess inventory conditions.",
-        "summary_missing_buyers": "No validated buyer, competitor, or service-provider matches were identified for the buyer network.",
-        "summary_missing_company": "Core company basics are still missing from the profile.",
-        "summary_company_intro": "{company} is captured in the current dataset as a supplier in {industry} with focus areas including {products}.",
-        "summary_quality": "The currently supportable evidence level is {quality}.",
-        "main_sections_note": "The main body of this report focuses exclusively on researched business results.",
-    },
-}
+BRAND_NAVY  = colors.HexColor("#102a43")
+BRAND_BLUE  = colors.HexColor("#1f5aa6")
+BRAND_SKY   = colors.HexColor("#d9e8ff")
+BRAND_TEAL  = colors.HexColor("#0f766e")
+BRAND_GREEN = colors.HexColor("#2f855a")
+BRAND_AMBER = colors.HexColor("#c47f00")
+BRAND_RED   = colors.HexColor("#b83232")
+TEXT_PRIMARY = colors.HexColor("#1f2933")
+TEXT_MUTED   = colors.HexColor("#52606d")
+BORDER       = colors.HexColor("#d9e2ec")
+SURFACE      = colors.HexColor("#f7f9fc")
+SURFACE_WARM = colors.HexColor("#fff5f5")
+WHITE        = colors.white
 
 
-class _ReportPDF(FPDF):
-    def __init__(self, lang: str = "de"):
-        super().__init__()
-        self.lang = lang
-        self.t = _T.get(lang, _T["en"])
-        self.set_auto_page_break(auto=True, margin=20)
+# ── helpers ──────────────────────────────────────────────────────────────────
 
-    def header(self):
-        self.set_font("Helvetica", "B", 10)
-        self.set_text_color(100, 100, 100)
-        self.cell(0, 8, self.t["title"], align="R", new_x="LMARGIN", new_y="NEXT")
-        self.line(10, self.get_y(), 200, self.get_y())
-        self.ln(4)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font("Helvetica", "I", 8)
-        self.set_text_color(128, 128, 128)
-        self.cell(0, 10, f"{self.page_no()}/{{nb}}", align="C")
-
-    def section_title(self, title: str):
-        self.set_font("Helvetica", "B", 14)
-        self.set_text_color(0, 51, 102)
-        self.ln(6)
-        self.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
-        self.line(10, self.get_y(), 200, self.get_y())
-        self.ln(3)
-
-    def sub_title(self, title: str):
-        self.set_font("Helvetica", "B", 11)
-        self.set_text_color(0, 0, 0)
-        self.ln(3)
-        self.cell(0, 7, title, new_x="LMARGIN", new_y="NEXT")
-        self.ln(1)
-
-    def field(self, label: str, value: str):
-        self.set_font("Helvetica", "B", 9)
-        self.set_text_color(60, 60, 60)
-        self.cell(55, 6, f"{label}:")
-        self.set_font("Helvetica", "", 9)
-        self.set_text_color(0, 0, 0)
-        self.multi_cell(0, 6, _render_text(value, self.lang))
-        self.ln(1)
-
-    def body_text(self, text: str):
-        self.set_font("Helvetica", "", 9)
-        self.set_text_color(0, 0, 0)
-        self.multi_cell(0, 5, _render_text(text, self.lang))
-        self.ln(2)
-
-    def bullet(self, text: str):
-        self.set_font("Helvetica", "", 9)
-        self.set_text_color(0, 0, 0)
-        self.cell(6, 5, "-")
-        self.multi_cell(0, 5, _render_text(text, self.lang))
-        self.ln(1)
-
-    def tag(self, label: str, color: tuple[int, int, int] = (0, 102, 51)):
-        self.set_font("Helvetica", "B", 9)
-        self.set_text_color(*color)
-        self.cell(0, 5, label, new_x="LMARGIN", new_y="NEXT")
-        self.set_text_color(0, 0, 0)
-
-    def stat_card(
-        self,
-        x: float,
-        y: float,
-        w: float,
-        h: float,
-        title: str,
-        value: str,
-        subtitle: str = "",
-        accent: tuple[int, int, int] = (0, 51, 102),
-    ):
-        self.set_draw_color(220, 225, 235)
-        self.set_fill_color(248, 250, 253)
-        self.rect(x, y, w, h, style="DF")
-        self.set_fill_color(*accent)
-        self.rect(x, y, 2.5, h, style="F")
-        self.set_xy(x + 6, y + 4)
-        self.set_font("Helvetica", "B", 10)
-        self.set_text_color(90, 90, 90)
-        self.cell(w - 10, 5, _safe(title), new_x="LMARGIN", new_y="NEXT")
-        self.set_x(x + 6)
-        self.set_font("Helvetica", "B", 16)
-        self.set_text_color(20, 20, 20)
-        self.cell(w - 10, 8, _safe(value), new_x="LMARGIN", new_y="NEXT")
-        if subtitle:
-            self.set_x(x + 6)
-            self.set_font("Helvetica", "", 8)
-            self.set_text_color(110, 110, 110)
-            self.multi_cell(w - 10, 4, _safe(subtitle))
-
-    def progress_row(
-        self,
-        label: str,
-        ratio: float,
-        value_text: str,
-        color: tuple[int, int, int] = (0, 102, 153),
-    ):
-        ratio = max(0.0, min(1.0, ratio))
-        self.set_font("Helvetica", "B", 9)
-        self.set_text_color(60, 60, 60)
-        self.cell(38, 6, _safe(label))
-        bar_x = self.get_x()
-        bar_y = self.get_y() + 1.5
-        bar_w = 92
-        bar_h = 4
-        self.set_draw_color(215, 220, 230)
-        self.set_fill_color(236, 240, 245)
-        self.rect(bar_x, bar_y, bar_w, bar_h, style="DF")
-        self.set_fill_color(*color)
-        self.rect(bar_x, bar_y, bar_w * ratio, bar_h, style="F")
-        self.set_xy(bar_x + bar_w + 4, self.get_y())
-        self.set_font("Helvetica", "", 8)
-        self.set_text_color(90, 90, 90)
-        self.cell(0, 6, _safe(value_text), new_x="LMARGIN", new_y="NEXT")
-
-    def decision_chip_row(self, items: list[tuple[str, str, tuple[int, int, int]]]):
-        x = self.l_margin
-        y = self.get_y()
-        chip_w = (self.w - self.l_margin - self.r_margin - 8) / 3
-        chip_h = 18
-        for index, (title, value, color) in enumerate(items):
-            chip_x = x + index * (chip_w + 4)
-            self.set_draw_color(220, 225, 235)
-            self.set_fill_color(248, 250, 253)
-            self.rect(chip_x, y, chip_w, chip_h, style="DF")
-            self.set_fill_color(*color)
-            self.rect(chip_x + 3, y + 5, 6, 6, style="F")
-            self.set_xy(chip_x + 12, y + 3)
-            self.set_font("Helvetica", "B", 9)
-            self.set_text_color(40, 40, 40)
-            self.cell(chip_w - 15, 4, _safe(title), new_x="LMARGIN", new_y="NEXT")
-            self.set_xy(chip_x + 12, y + 8)
-            self.set_font("Helvetica", "", 8)
-            self.set_text_color(90, 90, 90)
-            self.multi_cell(chip_w - 15, 4, _safe(value))
-        self.set_y(y + chip_h + 4)
+def _safe_text(value: Any, default: str = "n/v") -> str:
+    text = str(value or "").strip()
+    return text if text else default
 
 
-def _safe(value: Any) -> str:
-    text = str(value or "n/v").strip()
-    # Replace characters that latin-1 can't encode
-    replacements = {
-        "\u2013": "-", "\u2014": "-", "\u2018": "'", "\u2019": "'",
-        "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u2022": "-",
-        "\u20ac": "EUR", "\u00df": "ss",
-    }
-    for char, repl in replacements.items():
-        text = text.replace(char, repl)
-    return text.encode("latin-1", errors="replace").decode("latin-1")
+def _safe_join(values: Any, default: str = "n/v") -> str:
+    if not values:
+        return default
+    if isinstance(values, str):
+        return values.strip() or default
+    if isinstance(values, list):
+        rendered = [_safe_text(item, "").strip() for item in values if _safe_text(item, "").strip()]
+        return ", ".join(rendered) if rendered else default
+    return _safe_text(values, default)
 
 
-def _render_text(value: Any, lang: str) -> str:
-    return _safe(_localize_text(value, lang))
+def _top_items(values: Any, limit: int = 5) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    rendered = [_safe_text(item, "").strip() for item in values]
+    return [item for item in rendered if item][:limit]
 
 
-def _localize_text(value: Any, lang: str) -> str:
-    text = str(value or "n/v")
-    replacements = {
-        "de": {
-            "Gear and transmission technology": "Zahnrad- und Getriebetechnik",
-            "gear and transmission technology": "Zahnrad- und Getriebetechnik",
-            "Planetary gears": "Planetengetriebe",
-            "planetary gears": "Planetengetriebe",
-            "Drive gearboxes": "Antriebsgetriebe",
-            "Transmission components": "Getriebekomponenten",
-            "Service Providers": "Service-Anbieter",
-            "Peer Competitors": "Peer-Konkurrenten",
-            "Downstream Buyers": "Abnehmer",
-            "Cross-Industry Buyers": "Cross-Industry Käufer",
-            "Evidence health": "Evidenzqualität",
-        },
-        "en": {
-            "Zahnrad- und Getriebetechnik": "gear and transmission technology",
-            "Planetengetriebe": "planetary gears",
-            "Antriebsgetriebe": "drive gearboxes",
-            "Getriebekomponenten": "transmission components",
-            "Service-Anbieter": "Service Providers",
-            "Peer-Konkurrenten": "Peer Competitors",
-            "Abnehmer": "Downstream Buyers",
-            "Evidenzqualität": "Evidence health",
-        },
-    }
-    for source, target in replacements.get(lang, {}).items():
-        text = text.replace(source, target)
-    return text
-
-
-def _get(data: dict, *keys, default="n/v") -> Any:
-    current = data
-    for key in keys:
-        if isinstance(current, dict):
-            current = current.get(key, default)
-        else:
-            return default
-    return current or default
-
-
-def _is_filled(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        return normalized not in {"", "n/v", "unknown", "unsicher"}
-    if isinstance(value, (list, tuple, set)):
-        return len(value) > 0
-    if isinstance(value, dict):
-        return len(value) > 0
-    return True
-
-
-def _safe_ratio(numerator: int, denominator: int) -> float:
-    if denominator <= 0:
-        return 0.0
-    return max(0.0, min(1.0, numerator / denominator))
-
-
-def _count_external_sources(industry: dict[str, Any]) -> int:
-    count = 0
-    for source in industry.get("sources", []) or []:
-        if not isinstance(source, dict):
-            continue
-        url = str(source.get("url", "") or "").strip().lower()
-        if not url:
-            continue
-        if "wikipedia.org" in url or "imsgear.com" in url or "zf.com" in url:
-            continue
-        count += 1
-    return count
-
-
-def _company_profile_coverage(profile: dict[str, Any]) -> tuple[int, int]:
-    checks = [
-        profile.get("legal_form"),
-        profile.get("founded"),
-        profile.get("headquarters"),
-        profile.get("employees"),
-        profile.get("revenue"),
-        profile.get("key_people"),
-    ]
-    return sum(1 for value in checks if _is_filled(value)), len(checks)
-
-
-def _industry_coverage(industry: dict[str, Any]) -> tuple[int, int]:
-    checks = [
-        industry.get("market_size"),
-        industry.get("growth_rate"),
-        industry.get("demand_outlook"),
-        industry.get("excess_stock_indicators"),
-        industry.get("key_trends"),
-        industry.get("overcapacity_signals"),
-    ]
-    return sum(1 for value in checks if _is_filled(value)), len(checks)
-
-
-def _market_coverage(market: dict[str, Any]) -> tuple[int, int, int]:
-    tiers = [
-        market.get("peer_competitors", {}),
-        market.get("downstream_buyers", {}),
-        market.get("service_providers", {}),
-        market.get("cross_industry_buyers", {}),
-    ]
-    covered = 0
-    buyer_count = 0
-    for tier in tiers:
-        if not isinstance(tier, dict):
-            continue
-        companies = tier.get("companies", []) or []
-        buyer_count += len(companies)
-        if companies:
-            covered += 1
-    return covered, len(tiers), buyer_count
-
-
-def _decision_signal(case: dict[str, Any]) -> tuple[str, tuple[int, int, int]]:
-    arguments = case.get("arguments", []) or []
-    pro = sum(1 for arg in arguments if str(arg.get("direction", "")).strip().lower() == "pro")
-    contra = sum(1 for arg in arguments if str(arg.get("direction", "")).strip().lower() == "contra")
-    if contra > pro:
-        return "contra-dominant", (180, 0, 0)
-    if pro > contra:
-        return "pro-dominant", (0, 128, 0)
-    return "mixed", (160, 120, 0)
-
-
-def _localized_status(value: Any, lang: str) -> str:
-    t = _T.get(lang, _T["en"])
+def _relevance_to_score(label: str) -> tuple[int, colors.Color]:
     mapping = {
-        "hoch": t["status_high"],
-        "high": t["status_high"],
-        "mittel": t["status_medium"],
-        "medium": t["status_medium"],
-        "moderate": t["status_medium"],
-        "niedrig": t["status_low"],
-        "low": t["status_low"],
-        "unklar": t["status_unclear"],
-        "unclear": t["status_unclear"],
-        "unsicher": t["trend_uncertain"],
-        "uncertain": t["trend_uncertain"],
-        "n/v": "n/v",
+        "hoch": (85, BRAND_GREEN), "high": (85, BRAND_GREEN),
+        "mittel": (60, BRAND_BLUE), "medium": (60, BRAND_BLUE),
+        "niedrig": (30, BRAND_AMBER), "low": (30, BRAND_AMBER),
+        "unklar": (15, TEXT_MUTED), "unclear": (15, TEXT_MUTED),
     }
-    normalized = str(value or "").strip().lower()
-    return mapping.get(normalized, str(value or "n/v"))
+    return mapping.get((label or "").strip().lower(), (15, TEXT_MUTED))
 
 
-def _localized_service_area(value: str, lang: str) -> str:
-    t = _T.get(lang, _T["en"])
+def _translation(lang: str) -> dict[str, str]:
+    if lang == "en":
+        return {
+            "report_subtitle": "Target company assessment for commercial preparation",
+            "prepared_for": "Prepared for Liquisto",
+            "date_label": "Report date",
+            "snapshot": "Key Facts",
+            "summary": "Executive Summary",
+            "service_fit": "Liquisto Opportunity",
+            "company_profile": "Company Profile",
+            "market_section": "Market & Demand Context",
+            "buyer_section": "Buyer & Redeployment Landscape",
+            "risk_section": "Key Risks",
+            "action_section": "Recommended Next Steps",
+            "sources_section": "Evidence Appendix",
+            "readiness": "Research Readiness",
+            "usable_yes": "USABLE",
+            "usable_no": "NOT USABLE",
+            "industry": "Industry",
+            "website": "Website",
+            "products": "Products & Services",
+            "material_relevance": "Product & Asset Scope",
+            "economic_view": "Economic Situation",
+            "market_trend": "Trend",
+            "demand_outlook": "Demand Outlook",
+            "market_assessment": "Market Assessment",
+            "key_trends": "Key Trends",
+            "buyer_tier": "Tier",
+            "buyer_count": "Count",
+            "buyer_assessment": "Assessment",
+            "peer_competitors": "Peer Competitors",
+            "downstream_buyers": "Downstream Buyers",
+            "service_providers": "Service Providers",
+            "cross_industry_buyers": "Cross-Industry Buyers",
+            "source_title": "Title / URL",
+            "source_type": "Type",
+            "known_companies": "Known Companies",
+            "page_label": "Page",
+            "col_country": "Country",
+            "col_relevance": "Relevance",
+            "rel_high": "High",
+            "rel_medium": "Medium",
+            "rel_low": "Low",
+            "legal_form": "Legal Form",
+            "founded": "Founded",
+            "headquarters": "Headquarters",
+            "hq_short": "HQ",
+            "employees": "Employees",
+            "revenue": "Revenue",
+            "revenue_trend": "Revenue Trend",
+            "profitability": "Profitability",
+            "financial_pressure": "Financial Pressure",
+            "assessment": "Assessment",
+        }
     return {
-        "excess_inventory": t["service_area_excess_inventory"],
-        "repurposing": t["service_area_repurposing"],
-        "analytics": t["service_area_analytics"],
-    }.get(str(value or "").strip().lower(), str(value or "n/v"))
+        "report_subtitle": "Zielkundenanalyse fuer die kommerzielle Vorbereitung",
+        "prepared_for": "Vorbereitet fuer Liquisto",
+        "date_label": "Berichtsdatum",
+        "snapshot": "Key Facts",
+        "summary": "Executive Summary",
+        "service_fit": "Liquisto Opportunity",
+        "company_profile": "Unternehmensprofil",
+        "market_section": "Markt- & Nachfragekontext",
+        "buyer_section": "Kaeufer- & Redeployment-Landschaft",
+        "risk_section": "Zentrale Risiken",
+        "action_section": "Naechste Schritte",
+        "sources_section": "Evidenz-Anhang",
+        "readiness": "Recherche-Qualitaet",
+        "usable_yes": "VERWENDBAR",
+        "usable_no": "NICHT VERWENDBAR",
+        "industry": "Branche",
+        "website": "Webseite",
+        "products": "Produkte & Leistungen",
+        "material_relevance": "Produkt- & Asset-Scope",
+        "economic_view": "Wirtschaftliche Lage",
+        "market_trend": "Trendrichtung",
+        "demand_outlook": "Nachfrageausblick",
+        "market_assessment": "Markteinschaetzung",
+        "key_trends": "Wesentliche Trends",
+        "buyer_tier": "Kategorie",
+        "buyer_count": "Anz.",
+        "buyer_assessment": "Einschaetzung",
+        "peer_competitors": "Wettbewerber",
+        "downstream_buyers": "Abnaehmer",
+        "service_providers": "Dienstleister",
+        "cross_industry_buyers": "Branchenuebergreifende Kaeufer",
+        "source_title": "Titel / URL",
+        "source_type": "Typ",
+        "known_companies": "Bekannte Unternehmen",
+        "page_label": "Seite",
+        "col_country": "Land",
+        "col_relevance": "Relevanz",
+        "rel_high": "Hoch",
+        "rel_medium": "Mittel",
+        "rel_low": "Niedrig",
+        "legal_form": "Rechtsform",
+        "founded": "Gruendung",
+        "headquarters": "Hauptsitz",
+        "hq_short": "Hauptsitz",
+        "employees": "Mitarbeiter",
+        "revenue": "Umsatz",
+        "revenue_trend": "Umsatztrend",
+        "profitability": "Profitabilitaet",
+        "financial_pressure": "Finanzdruck",
+        "assessment": "Einschaetzung",
+    }
 
 
-def _localized_signal_label(value: str, lang: str) -> str:
-    t = _T.get(lang, _T["en"])
+def _styles() -> dict[str, ParagraphStyle]:
+    sample = getSampleStyleSheet()
     return {
-        "pro-dominant": t["signal_pro"],
-        "contra-dominant": t["signal_contra"],
-        "mixed": t["signal_mixed"],
-    }.get(str(value or "").strip().lower(), str(value or "n/v"))
+        "title": ParagraphStyle("ReportTitle", parent=sample["Title"],
+            fontName="Helvetica-Bold", fontSize=26, leading=30,
+            textColor=WHITE, alignment=TA_LEFT, spaceAfter=4),
+        "subtitle": ParagraphStyle("ReportSubtitle", parent=sample["BodyText"],
+            fontName="Helvetica", fontSize=10, leading=13,
+            textColor=WHITE, alignment=TA_LEFT),
+        "cover_meta": ParagraphStyle("CoverMeta", parent=sample["BodyText"],
+            fontName="Helvetica", fontSize=9, leading=12,
+            textColor=colors.HexColor("#90aac7"), alignment=TA_LEFT),
+        "section": ParagraphStyle("SectionTitle", parent=sample["Heading2"],
+            fontName="Helvetica-Bold", fontSize=13, leading=16,
+            textColor=BRAND_NAVY, spaceAfter=6, spaceBefore=4),
+        "body": ParagraphStyle("Body", parent=sample["BodyText"],
+            fontName="Helvetica", fontSize=9.5, leading=13, textColor=TEXT_PRIMARY),
+        "small": ParagraphStyle("Small", parent=sample["BodyText"],
+            fontName="Helvetica", fontSize=8, leading=10, textColor=TEXT_MUTED),
+        "kpi_label": ParagraphStyle("KpiLabel", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=7.5, leading=9, textColor=TEXT_MUTED),
+        "kpi_value": ParagraphStyle("KpiValue", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=14, leading=17, textColor=BRAND_NAVY),
+        "kpi_value_small": ParagraphStyle("KpiValueSmall", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=10, leading=13, textColor=BRAND_NAVY),
+        "tile_label": ParagraphStyle("TileLabel", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=10, leading=13, textColor=TEXT_PRIMARY),
+        "tile_high": ParagraphStyle("TileHigh", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=12, leading=15, textColor=BRAND_GREEN),
+        "tile_medium": ParagraphStyle("TileMedium", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=12, leading=15, textColor=BRAND_BLUE),
+        "tile_low": ParagraphStyle("TileLow", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=12, leading=15, textColor=BRAND_AMBER),
+        "tile_unclear": ParagraphStyle("TileUnclear", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=12, leading=15, textColor=TEXT_MUTED),
+        "table_header": ParagraphStyle("TableHeader", parent=sample["BodyText"],
+            fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=WHITE),
+        "table_cell": ParagraphStyle("TableCell", parent=sample["BodyText"],
+            fontName="Helvetica", fontSize=8.5, leading=11, textColor=TEXT_PRIMARY),
+    }
 
 
-def _top_products(profile: dict[str, Any]) -> str:
-    products = [str(item).strip() for item in profile.get("products_and_services", []) or [] if str(item).strip()]
-    if not products:
-        return "n/v"
-    return ", ".join(products[:3])
+# ── page chrome ───────────────────────────────────────────────────────────────
+
+def _make_header_footer(page_label: str):  # noqa: ANN001
+    def _header_footer(canvas, doc) -> None:  # noqa: ANN001
+        canvas.saveState()
+        canvas.setFillColor(WHITE)
+        canvas.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, fill=1, stroke=0)
+        canvas.setFillColor(BRAND_NAVY)
+        canvas.rect(0, PAGE_HEIGHT - 14 * mm, PAGE_WIDTH, 14 * mm, fill=1, stroke=0)
+        canvas.setFillColor(WHITE)
+        canvas.setFont("Helvetica-Bold", 8.5)
+        canvas.drawString(doc.leftMargin, PAGE_HEIGHT - 9 * mm, "Liquisto Research Briefing")
+        canvas.setFillColor(TEXT_MUTED)
+        canvas.setFont("Helvetica", 8)
+        canvas.drawRightString(PAGE_WIDTH - doc.rightMargin, 9 * mm, f"{page_label} {doc.page}")
+        canvas.restoreState()
+    return _header_footer
 
 
-def _build_localized_summary(pipeline_data: dict[str, Any], lang: str) -> str:
-    t = _T.get(lang, _T["en"])
-    profile = pipeline_data.get("company_profile", {}) or {}
-    industry = pipeline_data.get("industry_analysis", {}) or {}
-    market = pipeline_data.get("market_network", {}) or {}
-    qa = pipeline_data.get("quality_review", {}) or {}
+# ── cover ─────────────────────────────────────────────────────────────────────
 
-    parts = [
-        t["summary_company_intro"].format(
-            company=_safe(_get(profile, "company_name")),
-            industry=_safe(_get(profile, "industry")),
-            products=_safe(_top_products(profile)),
+def _cover_block(company_name: str, subtitle: str, prepared_for: str,
+                 date_label: str, styles: dict[str, ParagraphStyle]) -> Table:
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    content = [
+        [Paragraph(f"<b>{company_name}</b>", styles["title"])],
+        [Spacer(1, 2)],
+        [Paragraph(subtitle, styles["subtitle"])],
+        [Spacer(1, 8)],
+        [Paragraph(f"{prepared_for}    ·    {date_label}: {date_str}", styles["cover_meta"])],
+    ]
+    table = Table(content, colWidths=[170 * mm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), BRAND_NAVY),
+        ("LEFTPADDING", (0, 0), (-1, -1), 16),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+        ("TOPPADDING", (0, 0), (-1, -1), 14),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+    ]))
+    return table
+
+
+# ── KPI bar ───────────────────────────────────────────────────────────────────
+
+def _kpi_bar(kpis: list[tuple[str, str]], styles: dict[str, ParagraphStyle]) -> Table:
+    """4 fact cards: Revenue | Employees | HQ | Founded."""
+    cells = []
+    for label, value in kpis:
+        val_style = styles["kpi_value_small"] if len(value) > 20 else styles["kpi_value"]
+        inner = Table(
+            [[Paragraph(label, styles["kpi_label"])], [Paragraph(value, val_style)]],
+            colWidths=[39 * mm],
         )
+        inner.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        cells.append(inner)
+    table = Table([cells], colWidths=[42.5 * mm] * len(cells))
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), SURFACE),
+        ("BOX", (0, 0), (-1, -1), 0.7, BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.7, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
+    return table
+
+
+# ── readiness bar ─────────────────────────────────────────────────────────────
+
+def _readiness_bar(score: int, usable: bool, evidence_health: str,
+                   labels: dict[str, str]) -> Drawing:
+    w = 170 * mm
+    h = 11 * mm
+    d = Drawing(w, h)
+    bar_w = 100 * mm
+    bar_h = 5
+    bar_y = (h - bar_h) / 2
+    fill_color = BRAND_GREEN if usable else BRAND_AMBER
+    d.add(Rect(0, bar_y, bar_w, bar_h, fillColor=BRAND_SKY, strokeColor=None, radius=2))
+    d.add(Rect(0, bar_y, bar_w * (score / 100), bar_h, fillColor=fill_color, strokeColor=None, radius=2))
+    d.add(String(bar_w + 4, bar_y, f"{score}/100", fontName="Helvetica-Bold",
+                 fontSize=9, fillColor=TEXT_PRIMARY))
+    badge_text = f"  {labels['usable_yes']} ✓" if usable else f"  {labels['usable_no']}"
+    badge_color = BRAND_GREEN if usable else BRAND_RED
+    d.add(String(bar_w + 36, bar_y, badge_text, fontName="Helvetica-Bold",
+                 fontSize=8, fillColor=badge_color))
+    label_text = f"{labels['readiness']}"
+    d.add(String(0, bar_y + bar_h + 2, label_text,
+                 fontName="Helvetica", fontSize=7, fillColor=TEXT_MUTED))
+    return d
+
+
+# ── opportunity tiles ─────────────────────────────────────────────────────────
+
+def _opportunity_tiles(items: list[dict[str, Any]], styles: dict[str, ParagraphStyle]) -> Table:
+    """3 side-by-side colored tiles for the service areas."""
+    _rel_style = {
+        "high": styles["tile_high"], "hoch": styles["tile_high"],
+        "medium": styles["tile_medium"], "mittel": styles["tile_medium"],
+        "low": styles["tile_low"], "niedrig": styles["tile_low"],
+    }
+    tile_w = 170 / 3 * mm
+    cells = []
+    for item in items[:3]:
+        label = _safe_text(item.get("service_area", "")).replace("_", " ").title()
+        relevance = _safe_text(item.get("relevance", "unclear"))
+        reasoning = _safe_text(item.get("reasoning", ""))
+        if len(reasoning) > 100:
+            reasoning = reasoning[:97] + "…"
+        _, bar_color = _relevance_to_score(relevance)
+        rel_style = _rel_style.get(relevance.lower(), styles["tile_unclear"])
+        tile = Table(
+            [
+                [""],  # colored header band
+                [Paragraph(f"<b>{label}</b>", styles["tile_label"])],
+                [Paragraph(relevance.title(), rel_style)],
+                [Paragraph(reasoning, styles["small"])],
+            ],
+            colWidths=[tile_w - 6],
+            rowHeights=[4, None, None, None],
+        )
+        tile.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (0, 0), bar_color),
+            ("BACKGROUND", (0, 1), (-1, -1), WHITE),
+            ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 9),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (0, 0), 0),
+            ("BOTTOMPADDING", (0, 0), (0, 0), 0),
+            ("TOPPADDING", (0, 1), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
+        ]))
+        cells.append(tile)
+
+    while len(cells) < 3:
+        cells.append(Spacer(1, 1))
+
+    table = Table([cells], colWidths=[tile_w] * 3)
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return table
+
+
+# ── info table (filters n/v rows) ─────────────────────────────────────────────
+
+def _info_table(rows: list[tuple[str, str]], styles: dict[str, ParagraphStyle],
+                widths: tuple[float, float]) -> Table | None:
+    data = [
+        [Paragraph(f"<b>{label}</b>", styles["table_cell"]),
+         Paragraph(value, styles["table_cell"])]
+        for label, value in rows
+        if value and value.strip() not in {"n/v", "n/a", ""}
     ]
-    if not _is_filled(profile.get("founded")) or not _is_filled(profile.get("headquarters")):
-        parts.append(t["summary_missing_company"])
-    if _count_external_sources(industry) == 0:
-        parts.append(t["summary_missing_market"])
-    covered_tiers, _total_tiers, buyer_count = _market_coverage(market)
-    if buyer_count == 0 and covered_tiers == 0:
-        parts.append(t["summary_missing_buyers"])
-    parts.append(t["summary_quality"].format(quality=_localized_status(_get(qa, "evidence_health"), lang)))
-    return " ".join(parts)
+    if not data:
+        return None
+    table = Table(data, colWidths=list(widths))
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), WHITE),
+        ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return table
 
 
-def _build_localized_research_note(pipeline_data: dict[str, Any], lang: str) -> str:
-    t = _T.get(lang, _T["en"])
-    profile = pipeline_data.get("company_profile", {}) or {}
-    industry = pipeline_data.get("industry_analysis", {}) or {}
-    market = pipeline_data.get("market_network", {}) or {}
-    covered_tiers, total_tiers, buyer_count = _market_coverage(market)
-    note_parts = [
-        f"{t['visual_company']}: {_company_profile_coverage(profile)[0]}/{_company_profile_coverage(profile)[1]} {t['metric_filled_fields']}.",
-        f"{t['visual_market']}: {_count_external_sources(industry)} {t['metric_external_sources']}.",
-        f"{t['visual_buyers']}: {covered_tiers}/{total_tiers} {t['metric_tier_coverage']}, {buyer_count} {t['buyer_count'].lower()}.",
+# ── two-column bullets ────────────────────────────────────────────────────────
+
+def _bullet_col(title: str, items: list[str], styles: dict[str, ParagraphStyle],
+                col_w: float, accent: colors.Color = BRAND_BLUE) -> Table:
+    body = "<br/>".join(f"- {item}" for item in (items or ["n/v"])[:6])
+    box = Table(
+        [[Paragraph(f"<b>{title}</b>", styles["body"])],
+         [Paragraph(body, styles["body"])]],
+        colWidths=[col_w],
+    )
+    box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), WHITE),
+        ("LINEBEFORE", (0, 0), (0, -1), 4, accent),
+        ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return box
+
+
+# ── buyer landscape ───────────────────────────────────────────────────────────
+
+def _relevance_color(label: str) -> colors.Color:
+    l = (label or "").strip().lower()
+    if l in {"high", "hoch"}:    return BRAND_GREEN
+    if l in {"medium", "mittel"}: return BRAND_BLUE
+    if l in {"low", "niedrig"}:   return BRAND_AMBER
+    return TEXT_MUTED
+
+
+def _buyer_landscape(market: dict[str, Any], labels: dict[str, str],
+                     styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """
+    One table per tier (if companies exist), each showing individual company rows.
+    Tier header (navy) → one row per company: Name | Country | Relevance
+    """
+    tiers = [
+        (labels["peer_competitors"],      market.get("peer_competitors", {})),
+        (labels["downstream_buyers"],     market.get("downstream_buyers", {})),
+        (labels["service_providers"],     market.get("service_providers", {})),
+        (labels["cross_industry_buyers"], market.get("cross_industry_buyers", {})),
     ]
-    return " ".join(note_parts)
 
+    col_name    = 100 * mm
+    col_country =  38 * mm
+    col_rel     =  32 * mm
 
-def _localized_risks(pipeline_data: dict[str, Any], lang: str) -> list[str]:
-    t = _T.get(lang, _T["en"])
-    profile = pipeline_data.get("company_profile", {}) or {}
-    industry = pipeline_data.get("industry_analysis", {}) or {}
-    market = pipeline_data.get("market_network", {}) or {}
-    risks: list[str] = []
-    if not _is_filled(profile.get("founded")) or not _is_filled(profile.get("headquarters")):
-        risks.append(t["summary_missing_company"])
-    if _count_external_sources(industry) == 0:
-        risks.append(t["summary_missing_market"])
-    covered_tiers, _total_tiers, buyer_count = _market_coverage(market)
-    if buyer_count == 0 and covered_tiers == 0:
-        risks.append(t["summary_missing_buyers"])
-    return risks
+    _rel_label = {
+        "high":    labels["rel_high"],   "hoch":    labels["rel_high"],
+        "medium":  labels["rel_medium"], "mittel":  labels["rel_medium"],
+        "low":     labels["rel_low"],    "niedrig": labels["rel_low"],
+    }
 
+    def _fmt_relevance(raw: str) -> str:
+        r = (raw or "").strip()
+        return _rel_label.get(r.lower(), r) if r not in {"n/v", ""} else "—"
 
-def _localized_next_steps(pipeline_data: dict[str, Any], lang: str) -> list[str]:
-    if lang == "de":
-        return [
-            "Offizielle Unternehmensquellen oder Registerdaten für Gründung, Hauptsitz und Management ergänzen.",
-            "Aktuelle Marktquellen für Marktgröße, Wachstum, Nachfrage und Überbestandslage beschaffen.",
-            "Buyer-Longlist mit Primärquellen, Referenzen oder belastbaren Wettbewerbsüberschneidungen nachschärfen.",
-        ]
-    return [
-        "Add official company or registry sources for founding date, headquarters, and management.",
-        "Source current market evidence for market size, growth, demand, and excess inventory conditions.",
-        "Strengthen the buyer longlist with primary-source references or verified competitor overlaps.",
-    ]
+    flowables: list[Any] = []
 
-
-def generate_pdf(pipeline_data: dict[str, Any], lang: str = "de") -> bytes:
-    """Generate a PDF report from pipeline data. Returns PDF as bytes."""
-    t = _T.get(lang, _T["en"])
-    pdf = _ReportPDF(lang=lang)
-    pdf.alias_nb_pages()
-    pdf.add_page()
-
-    # Title page
-    pdf.set_font("Helvetica", "B", 22)
-    pdf.set_text_color(0, 51, 102)
-    pdf.ln(30)
-    pdf.cell(0, 15, t["title"], align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 14)
-    pdf.set_text_color(80, 80, 80)
-    company = _get(pipeline_data, "company_profile", "company_name")
-    pdf.cell(0, 10, _safe(company), align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(5)
-    pdf.set_font("Helvetica", "I", 10)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    pdf.cell(0, 8, f"{t['generated']} {now}", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(12)
-
-    qa = pipeline_data.get("quality_review", {}) or {}
-    market = pipeline_data.get("market_network", {}) or {}
-    profile = pipeline_data.get("company_profile", {}) or {}
-    industry = pipeline_data.get("industry_analysis", {}) or {}
-    company_filled, company_total = _company_profile_coverage(profile)
-    covered_tiers, total_tiers, buyer_count = _market_coverage(market)
-    evidence_label = _localized_status(_get(qa, "evidence_health"), lang)
-    card_y = pdf.get_y()
-    card_w = (pdf.w - pdf.l_margin - pdf.r_margin - 9) / 4
-    pdf.section_title(t["readiness_dashboard"])
-    card_y = pdf.get_y()
-    pdf.stat_card(pdf.l_margin, card_y, card_w, 22, t["card_company"], f"{company_filled}/{company_total}", t["metric_filled_fields"], accent=(0, 92, 153))
-    pdf.stat_card(pdf.l_margin + card_w + 3, card_y, card_w, 22, t["card_market"], str(_count_external_sources(industry)), t["metric_external_sources"], accent=(180, 90, 0))
-    pdf.stat_card(pdf.l_margin + 2 * (card_w + 3), card_y, card_w, 22, t["card_evidence"], evidence_label, accent=(120, 0, 120))
-    pdf.stat_card(pdf.l_margin + 3 * (card_w + 3), card_y, card_w, 22, t["card_buyers"], str(buyer_count), t["buyer_count"], accent=(0, 128, 0))
-    pdf.set_y(card_y + 28)
-    pdf.body_text(t["main_sections_note"])
-
-    # --- Executive Summary ---
-    pdf.add_page()
-    synthesis = pipeline_data.get("synthesis", {})
-    industry_filled, industry_total = _industry_coverage(industry)
-    pdf.section_title(t["exec_summary"])
-    pdf.body_text(_build_localized_summary(pipeline_data, lang))
-    pdf.sub_title(t["visual_coverage"])
-    pdf.progress_row(
-        t["visual_company"],
-        _safe_ratio(company_filled, company_total),
-        f"{company_filled}/{company_total} {t['metric_filled_fields']}",
-        color=(0, 92, 153),
-    )
-    pdf.progress_row(
-        t["visual_market"],
-        _safe_ratio(industry_filled, industry_total),
-        f"{industry_filled}/{industry_total} {t['metric_filled_fields']} • {_count_external_sources(industry)} {t['metric_external_sources']}",
-        color=(160, 110, 0),
-    )
-    pdf.progress_row(
-        t["visual_buyers"],
-        _safe_ratio(covered_tiers, total_tiers),
-        f"{covered_tiers}/{total_tiers} {t['metric_tier_coverage']} • {buyer_count} {t['buyer_count'].lower()}",
-        color=(0, 128, 0),
-    )
-    pdf.ln(2)
-
-    # --- Company Profile ---
-    pdf.section_title(t["company_profile"])
-    pdf.field(t["field_company"], _get(profile, "company_name"))
-    pdf.field(t["field_legal_form"], _get(profile, "legal_form"))
-    pdf.field(t["field_founded"], _get(profile, "founded"))
-    pdf.field(t["field_hq"], _get(profile, "headquarters"))
-    pdf.field(t["field_website"], _get(profile, "website"))
-    pdf.field(t["field_industry"], _get(profile, "industry"))
-    pdf.field(t["field_employees"], _get(profile, "employees"))
-    pdf.field(t["field_revenue"], _get(profile, "revenue"))
-
-    products = _get(profile, "products_and_services", default=[])
-    if products and isinstance(products, list):
-        pdf.sub_title(t["field_products"])
-        for p in products:
-            pdf.bullet(str(p))
-
-    people = _get(profile, "key_people", default=[])
-    if people and isinstance(people, list):
-        pdf.sub_title(t["field_key_people"])
-        for person in people:
-            if isinstance(person, dict):
-                pdf.bullet(f"{person.get('name', '?')} – {person.get('role', '?')}")
-
-    # Economic situation
-    econ = _get(profile, "economic_situation", default={})
-    if isinstance(econ, dict):
-        pdf.sub_title(t["economic_situation"])
-        pdf.field(t["field_revenue_trend"], _get(econ, "revenue_trend"))
-        pdf.field(t["field_profitability"], _get(econ, "profitability"))
-        pdf.field(t["field_financial_pressure"], _get(econ, "financial_pressure"))
-        for event in _get(econ, "recent_events", default=[]) or []:
-            pdf.bullet(str(event))
-
-    # --- Industry Analysis ---
-    pdf.section_title(t["industry_analysis"])
-    pdf.field(t["field_industry"], _get(industry, "industry_name"))
-    pdf.field(t["field_market_size"], _get(industry, "market_size"))
-    pdf.field(t["field_trend"], _localized_status(_get(industry, "trend_direction"), lang))
-    pdf.field(t["field_growth"], _get(industry, "growth_rate"))
-    pdf.field(t["field_demand"], _get(industry, "demand_outlook"))
-    pdf.field(t["field_excess_stock"], _get(industry, "excess_stock_indicators"))
-
-    overcap = _get(industry, "overcapacity_signals", default=[])
-    pdf.sub_title(t["field_overcapacity"])
-    if overcap and isinstance(overcap, list):
-        for s in overcap:
-            pdf.bullet(str(s))
-    else:
-        pdf.body_text(t["no_data"])
-
-    trends = _get(industry, "key_trends", default=[])
-    pdf.sub_title(t["field_key_trends"])
-    if trends and isinstance(trends, list):
-        for tr in trends:
-            pdf.bullet(str(tr))
-    else:
-        pdf.body_text(t["no_data"])
-
-    # --- Buyer Network ---
-    pdf.section_title(t["buyer_network"])
-    pdf.sub_title(t["result_table"])
-    pdf.field(t["tier"], f"{t['tier_peers']}: {len(_get(market, 'peer_competitors', default={}).get('companies', []) if isinstance(_get(market, 'peer_competitors', default={}), dict) else [])}")
-    pdf.field(t["tier"], f"{t['tier_downstream']}: {len(_get(market, 'downstream_buyers', default={}).get('companies', []) if isinstance(_get(market, 'downstream_buyers', default={}), dict) else [])}")
-    pdf.field(t["tier"], f"{t['tier_service']}: {len(_get(market, 'service_providers', default={}).get('companies', []) if isinstance(_get(market, 'service_providers', default={}), dict) else [])}")
-    pdf.field(t["tier"], f"{t['tier_cross']}: {len(_get(market, 'cross_industry_buyers', default={}).get('companies', []) if isinstance(_get(market, 'cross_industry_buyers', default={}), dict) else [])}")
-
-    for tier_key, tier_label in [
-        ("peer_competitors", t["tier_peers"]),
-        ("downstream_buyers", t["tier_downstream"]),
-        ("service_providers", t["tier_service"]),
-        ("cross_industry_buyers", t["tier_cross"]),
-    ]:
-        tier = _get(market, tier_key, default={})
-        if not isinstance(tier, dict):
-            continue
-        companies = tier.get("companies", [])
-        pdf.sub_title(f"{tier_label} ({len(companies)})")
+    for tier_label, payload in tiers:
+        companies = (payload.get("companies", []) if isinstance(payload, dict) else [])
         if not companies:
-            pdf.body_text(t["no_data"])
-        for buyer in companies[:10]:
-            if isinstance(buyer, dict):
-                name = buyer.get("name", "?")
-                rel = buyer.get("relevance", "")
-                loc = ", ".join(filter(None, [buyer.get("city"), buyer.get("country")]))
-                line = f"{name}"
-                if loc:
-                    line += f" ({loc})"
-                if rel:
-                    line += f" – {rel}"
-                pdf.bullet(line)
+            continue
 
-    # --- Liquisto Service Relevance ---
-    relevance = _get(synthesis, "liquisto_service_relevance", default=[])
-    if relevance and isinstance(relevance, list):
-        pdf.section_title(t["liquisto_relevance"])
-        for item in relevance:
-            if isinstance(item, dict):
-                area = _localized_service_area(str(item.get("service_area", "?")), lang)
-                rel = _localized_status(item.get("relevance", "?"), lang)
-                color = {"hoch": (0, 128, 0), "high": (0, 128, 0), "mittel": (200, 150, 0), "medium": (200, 150, 0), "niedrig": (180, 0, 0), "low": (180, 0, 0)}.get(
-                    str(item.get("relevance", "")).lower(), (80, 80, 80)
-                )
-                pdf.tag(f"{area}: {rel}", color)
+        # Tier header row
+        data: list[list[Any]] = [[
+            Paragraph(f"<b>{tier_label}</b>",              styles["table_header"]),
+            Paragraph(f"<b>{labels['col_country']}</b>",   styles["table_header"]),
+            Paragraph(f"<b>{labels['col_relevance']}</b>", styles["table_header"]),
+        ]]
 
-    # --- Case Assessment (Pro/Contra) ---
-    assessments = _get(synthesis, "case_assessments", default=[])
-    if assessments and isinstance(assessments, list):
-        pdf.section_title(t["case_assessment"])
-        chips: list[tuple[str, str, tuple[int, int, int]]] = []
-        for case in assessments[:3]:
-            if not isinstance(case, dict):
-                continue
-            option = str(case.get("option", "?"))
-            option_label = {
-                "kaufen": t["option_kaufen"],
-                "kommission": t["option_kommission"],
-                "ablehnen": t["option_ablehnen"],
-            }.get(option.lower(), option)
-            signal, color = _decision_signal(case)
-            chips.append((option_label, f"{t['decision_signal']}: {_localized_signal_label(signal, lang)}", color))
-        if chips:
-            pdf.sub_title(t["visual_decision"])
-            pdf.decision_chip_row(chips)
-        for case in assessments:
-            if not isinstance(case, dict):
-                continue
-            option = case.get("option", "?")
-            option_label = {
-                "kaufen": t["option_kaufen"],
-                "kommission": t["option_kommission"],
-                "ablehnen": t["option_ablehnen"],
-            }.get(option.lower(), option)
-            pdf.sub_title(option_label)
-            signal, _color = _decision_signal(case)
-            pdf.body_text(f"{t['decision_signal']}: {_localized_signal_label(signal, lang)}")
+        for i, c in enumerate(companies):
+            name    = _safe_text(c.get("company_name") or c.get("name") if isinstance(c, dict) else str(c))
+            country = _safe_text(c.get("country", "") if isinstance(c, dict) else "")
+            rel_raw = _safe_text(c.get("relevance", "") if isinstance(c, dict) else "")
+            rel_txt = _fmt_relevance(rel_raw)
+            rel_color = _relevance_color(rel_raw)
 
-    # --- Buyer Summary + Risks + Next Steps ---
-    pdf.section_title(t["buyer_summary"])
-    pdf.body_text(_build_localized_research_note(pipeline_data, lang))
+            bg = WHITE if i % 2 == 0 else SURFACE
+            data.append([
+                Paragraph(name, styles["table_cell"]),
+                Paragraph(country if country not in {"n/v", ""} else "—", styles["table_cell"]),
+                Paragraph(f'<font color="#{int(rel_color.red*255):02x}{int(rel_color.green*255):02x}{int(rel_color.blue*255):02x}"><b>{rel_txt}</b></font>',
+                          styles["table_cell"]),
+            ])
 
-    localized_risks = _localized_risks(pipeline_data, lang)
-    if localized_risks:
-        pdf.section_title(t["risks"])
-        for r in localized_risks[:4]:
-            pdf.bullet(str(r))
+        table = Table(data, colWidths=[col_name, col_country, col_rel], repeatRows=1)
 
-    localized_steps = _localized_next_steps(pipeline_data, lang)
-    if localized_steps:
-        pdf.section_title(t["next_steps"])
-        for s in localized_steps[:4]:
-            pdf.bullet(str(s))
+        # Build per-row background commands
+        style_cmds = [
+            ("BACKGROUND",   (0, 0), (-1, 0),  BRAND_NAVY),
+            ("TEXTCOLOR",    (0, 0), (-1, 0),  WHITE),
+            ("BOX",          (0, 0), (-1, -1), 0.6, BORDER),
+            ("INNERGRID",    (0, 0), (-1, -1), 0.5, BORDER),
+            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING",  (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING",   (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 6),
+        ]
+        for i in range(len(companies)):
+            bg = WHITE if i % 2 == 0 else SURFACE
+            style_cmds.append(("BACKGROUND", (0, i + 1), (-1, i + 1), bg))
 
-    # --- Research Notes / Run Summary at the end ---
-    if qa:
-        pdf.section_title(t["evidence_qa"])
-        pdf.field(t["field_evidence_health"], _localized_status(_get(qa, "evidence_health"), lang))
-        pdf.sub_title(t["research_note"])
-        pdf.body_text(_build_localized_research_note(pipeline_data, lang))
+        table.setStyle(TableStyle(style_cmds))
+        flowables.append(table)
+        flowables.append(Spacer(1, 3 * mm))
 
-    output = pdf.output()
-    if isinstance(output, bytes):
-        return output
-    if isinstance(output, bytearray):
-        return bytes(output)
-    if isinstance(output, str):
-        return output.encode("latin-1")
-    return bytes(output)
+    return flowables if flowables else [Paragraph("n/v", styles["body"])]
+
+
+# ── risk table ────────────────────────────────────────────────────────────────
+
+def _risk_table(risks: list[str], styles: dict[str, ParagraphStyle]) -> Table:
+    data = [[Paragraph(f"▸  {risk}", styles["body"])] for risk in risks[:5]]
+    if not data:
+        data = [[Paragraph("n/v", styles["body"])]]
+    table = Table(data, colWidths=[170 * mm])
+    table.setStyle(TableStyle([
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, SURFACE_WARM]),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, BRAND_RED),
+        ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return table
+
+
+# ── next steps table ──────────────────────────────────────────────────────────
+
+def _steps_table(steps: list[str], styles: dict[str, ParagraphStyle]) -> Table:
+    data = [[Paragraph(f"{i + 1}.  {step}", styles["body"])]
+            for i, step in enumerate(steps[:5])]
+    if not data:
+        data = [[Paragraph("n/v", styles["body"])]]
+    table = Table(data, colWidths=[170 * mm])
+    table.setStyle(TableStyle([
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [WHITE, SURFACE]),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, BRAND_GREEN),
+        ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return table
+
+
+# ── evidence table ────────────────────────────────────────────────────────────
+
+def _source_table(sources: list[dict[str, Any]], labels: dict[str, str],
+                  styles: dict[str, ParagraphStyle]) -> Table:
+    data = [[
+        Paragraph(f"<b>{labels['source_title']}</b>", styles["table_header"]),
+        Paragraph(f"<b>{labels['source_type']}</b>",  styles["table_header"]),
+    ]]
+    if not sources:
+        data.append([Paragraph("n/v", styles["table_cell"]),
+                     Paragraph("—", styles["table_cell"])])
+    else:
+        for item in sources[:14]:
+            title = _safe_text(item.get("title") or item.get("publisher") or item.get("url"))
+            url   = _safe_text(item.get("url", ""))
+            stype = _safe_text(item.get("source_type") or "source")
+            url_display = url[:90] + ("…" if len(url) > 90 else "") if url != "n/v" else ""
+            cell_text = title
+            if url_display and url_display != title:
+                cell_text = f"{title}<br/><font size='7' color='#1f5aa6'>{url_display}</font>"
+            data.append([
+                Paragraph(cell_text, styles["table_cell"]),
+                Paragraph(stype, styles["table_cell"]),
+            ])
+    table = Table(data, colWidths=[138 * mm, 32 * mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BRAND_NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, SURFACE]),
+        ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    return table
+
+
+# ── main entry ────────────────────────────────────────────────────────────────
+
+_LANG_NAMES = {"de": "German", "fr": "French", "es": "Spanish"}
+
+
+def _translate_content(pipeline_data: dict[str, Any], target_lang: str) -> dict[str, Any]:
+    """Translate all narrative text fields to *target_lang* in one OpenAI call.
+
+    Returns a deep-copied, translated version of pipeline_data.
+    Falls back silently to the original on any error.
+    """
+    try:
+        from openai import OpenAI  # local import — only needed here
+        from src.config.settings import get_openai_api_key
+
+        api_key = get_openai_api_key()
+        if not api_key:
+            return pipeline_data
+
+        data = copy.deepcopy(pipeline_data)
+        syn  = data.get("synthesis", {}) or {}
+        ind  = data.get("industry_analysis", {}) or {}
+        prof = data.get("company_profile", {}) or {}
+        mkt  = data.get("market_network", {}) or {}
+
+        # ── collect every translatable string into a flat dict ──────────────
+        batch: dict[str, str] = {}
+
+        def _add(key: str, text: Any) -> None:
+            s = str(text or "").strip()
+            if s and s not in {"n/v", "n/a"}:
+                batch[key] = s
+
+        # Synthesis
+        _add("syn_exec",   syn.get("executive_summary", ""))
+        _add("syn_opp",    syn.get("opportunity_assessment_summary", ""))
+        _add("syn_buyers", syn.get("buyer_market_summary", ""))
+        for i, t in enumerate(syn.get("key_risks", []) or []):
+            _add(f"risk_{i}", t)
+        for i, t in enumerate(syn.get("next_steps", []) or []):
+            _add(f"step_{i}", t)
+
+        # Industry
+        _add("ind_assessment", ind.get("assessment", ""))
+        _add("ind_demand",     ind.get("demand_outlook", ""))
+        _add("ind_trend",      ind.get("trend_direction", ""))
+        for i, t in enumerate(ind.get("key_trends", []) or []):
+            _add(f"ind_ktrend_{i}", t)
+
+        # Company profile
+        for i, t in enumerate(prof.get("products_and_services", []) or []):
+            _add(f"prod_{i}", t)
+        for i, t in enumerate(prof.get("product_asset_scope", []) or []):
+            _add(f"scope_{i}", t)
+
+        # Market network assessments
+        for tier_key in ("peer_competitors", "downstream_buyers",
+                         "service_providers", "cross_industry_buyers"):
+            tier = mkt.get(tier_key, {}) or {}
+            _add(f"mkt_{tier_key}", (tier.get("assessment", "") if isinstance(tier, dict) else ""))
+
+        if not batch:
+            return data
+
+        # ── single LLM call ─────────────────────────────────────────────────
+        from src.config.settings import DEFAULT_MODEL
+        lang_name = _LANG_NAMES.get(target_lang, target_lang)
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are a professional business translator. "
+                        f"Translate all JSON values from English to {lang_name}. "
+                        f"Rules: keep company names, brand names, proper nouns, "
+                        f"abbreviations, URLs, and numeric values unchanged. "
+                        f"Return ONLY a valid JSON object with the exact same keys."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(batch, ensure_ascii=False)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
+        translated: dict[str, str] = json.loads(resp.choices[0].message.content)
+
+        def _get(key: str, original: Any) -> Any:
+            return translated.get(key, original)
+
+        # ── write translated values back ─────────────────────────────────────
+        syn["executive_summary"]              = _get("syn_exec",   syn.get("executive_summary", ""))
+        syn["opportunity_assessment_summary"] = _get("syn_opp",    syn.get("opportunity_assessment_summary", ""))
+        syn["buyer_market_summary"]           = _get("syn_buyers", syn.get("buyer_market_summary", ""))
+
+        syn["key_risks"]  = [_get(f"risk_{i}", t) for i, t in enumerate(syn.get("key_risks",  []) or [])]
+        syn["next_steps"] = [_get(f"step_{i}", t) for i, t in enumerate(syn.get("next_steps", []) or [])]
+
+        ind["assessment"]   = _get("ind_assessment", ind.get("assessment", ""))
+        ind["demand_outlook"] = _get("ind_demand",   ind.get("demand_outlook", ""))
+        ind["trend_direction"] = _get("ind_trend",   ind.get("trend_direction", ""))
+        ind["key_trends"] = [_get(f"ind_ktrend_{i}", t) for i, t in enumerate(ind.get("key_trends", []) or [])]
+
+        prof["products_and_services"] = [_get(f"prod_{i}", t)  for i, t in enumerate(prof.get("products_and_services", []) or [])]
+        prof["product_asset_scope"]   = [_get(f"scope_{i}", t) for i, t in enumerate(prof.get("product_asset_scope",   []) or [])]
+
+        for tier_key in ("peer_competitors", "downstream_buyers",
+                         "service_providers", "cross_industry_buyers"):
+            tier = mkt.get(tier_key)
+            if isinstance(tier, dict):
+                tier["assessment"] = _get(f"mkt_{tier_key}", tier.get("assessment", ""))
+
+        return data
+
+    except Exception:
+        return pipeline_data  # silent fallback — render English on error
+
+
+def generate_pdf(pipeline_data: dict[str, Any], *, lang: str = "de") -> bytes:
+    labels  = _translation(lang)
+    styles  = _styles()
+
+    # Translate all narrative content when a non-English output is requested
+    if lang != "en":
+        pipeline_data = _translate_content(pipeline_data, lang)
+
+    profile   = pipeline_data.get("company_profile", {}) or {}
+    industry  = pipeline_data.get("industry_analysis", {}) or {}
+    market    = pipeline_data.get("market_network", {}) or {}
+    quality   = pipeline_data.get("quality_review", {}) or {}
+    synthesis = pipeline_data.get("synthesis", {}) or {}
+    readiness = pipeline_data.get("research_readiness", {}) or {}
+
+    company_name      = _safe_text(profile.get("company_name") or synthesis.get("target_company"), "Target Company")
+    executive_summary = _safe_text(synthesis.get("executive_summary"))
+    industry_name     = _safe_text(profile.get("industry") or industry.get("industry_name"))
+    website           = _safe_text(profile.get("website"))
+    products          = _top_items(profile.get("products_and_services"), 6)
+    material_scope    = _top_items(profile.get("product_asset_scope") or profile.get("product_material_relevance"), 5)
+    key_trends        = _top_items(industry.get("key_trends"), 5)
+    service_relevance = synthesis.get("liquisto_service_relevance", []) or []
+    sources           = synthesis.get("sources") or profile.get("sources") or []
+
+    # Filter risks
+    _OPEN_STARTS = ("what ", "how ", "who ", "when ", "where ", "why ", "which ",
+                    "are there", "is there", "does ", "do ", "can ")
+    _BAD_STARTS  = ("point '", "no supporting source", "no verified", "no external search",
+                    "supporting page excerpt")
+
+    def _ok_risk(t: str) -> bool:
+        s = t.strip()
+        if not s or " " not in s:
+            return False
+        sl = s.lower()
+        return not any(sl.startswith(p) for p in _OPEN_STARTS + _BAD_STARTS)
+
+    raw_risks  = synthesis.get("key_risks") or []
+    risks      = _top_items([r for r in raw_risks if _ok_risk(r)], 5)
+    next_steps = _top_items(synthesis.get("next_steps"), 5)
+
+    # KPI facts
+    revenue   = _safe_text(profile.get("revenue"))
+    employees = _safe_text(profile.get("employees")).replace("Approximately ", "~").replace("approximately ", "~")
+    hq        = _safe_text(profile.get("headquarters"))
+    if hq != "n/v" and "," in hq:
+        # Keep only city: works for "City, Country" and "City, State, Country"
+        parts = [p.strip() for p in hq.split(",")]
+        hq = parts[0] if len(parts) >= 2 else hq
+    founded   = _safe_text(profile.get("founded"))
+    kpis = [
+        (labels["industry"],    industry_name),
+        (labels["revenue"],     revenue),
+        (labels["employees"],   employees),
+        (labels["hq_short"],    hq),
+    ]
+
+    # Research readiness
+    rs_score  = int(readiness.get("score", 0))
+    rs_usable = bool(readiness.get("usable", False))
+    rs_health = _safe_text(quality.get("evidence_health"))
+
+    # Company profile table rows
+    profile_rows = [
+        (labels["industry"],     industry_name),
+        (labels["website"],      website),
+        (labels["legal_form"],   _safe_text(profile.get("legal_form"))),
+        (labels["founded"],      founded),
+        (labels["headquarters"], _safe_text(profile.get("headquarters"))),
+        (labels["employees"],    _safe_text(profile.get("employees"))),
+        (labels["revenue"],      revenue),
+    ]
+
+    market_rows = [
+        (labels["market_trend"],    _safe_text(industry.get("trend_direction"))),
+        (labels["demand_outlook"],  _safe_text(industry.get("demand_outlook"))[:120]),
+        (labels["market_assessment"], _safe_text(industry.get("assessment"))[:300]),
+        (labels["key_trends"],      _safe_join(key_trends)),
+    ]
+
+    econ = profile.get("economic_situation", {}) or {}
+    econ_items = []
+    for label_key, field in [
+        ("revenue_trend",     "revenue_trend"),
+        ("profitability",     "profitability"),
+        ("financial_pressure","financial_pressure"),
+        ("assessment",        "assessment"),
+    ]:
+        v = _safe_text(econ.get(field))
+        if v != "n/v":
+            econ_items.append(f"{labels[label_key]}: {v}")
+
+    # ── build story ──────────────────────────────────────────────────────────
+
+    story: list[Any] = []
+
+    # Cover
+    story.append(_cover_block(company_name, labels["report_subtitle"],
+                              labels["prepared_for"], labels["date_label"], styles))
+    story.append(Spacer(1, 5 * mm))
+
+    # KPI bar
+    story.append(Paragraph(labels["snapshot"], styles["section"]))
+    story.append(_kpi_bar(kpis, styles))
+    story.append(Spacer(1, 3 * mm))
+
+    # Research readiness bar
+    if rs_score > 0:
+        story.append(_readiness_bar(rs_score, rs_usable, rs_health, labels))
+        story.append(Spacer(1, 4 * mm))
+
+    # Executive summary
+    story.append(Paragraph(labels["summary"], styles["section"]))
+    story.append(Paragraph(executive_summary, styles["body"]))
+    story.append(Spacer(1, 5 * mm))
+
+    # Opportunity tiles
+    story.append(Paragraph(labels["service_fit"], styles["section"]))
+    story.append(_opportunity_tiles(service_relevance, styles))
+    story.append(Spacer(1, 7 * mm))
+
+    # Company profile
+    story.append(Paragraph(labels["company_profile"], styles["section"]))
+    prof_table = _info_table(profile_rows, styles, (46 * mm, 124 * mm))
+    if prof_table:
+        story.append(prof_table)
+        story.append(Spacer(1, 4 * mm))
+    story.append(Table(
+        [[_bullet_col(labels["products"], products, styles, 82 * mm, BRAND_BLUE),
+          _bullet_col(labels["material_relevance"], material_scope, styles, 82 * mm, BRAND_TEAL)]],
+        colWidths=[84 * mm, 84 * mm],
+    ))
+    story.append(Spacer(1, 6 * mm))
+
+    # Market context
+    story.append(Paragraph(labels["market_section"], styles["section"]))
+    mkt_table = _info_table(market_rows, styles, (46 * mm, 124 * mm))
+    if mkt_table:
+        story.append(mkt_table)
+        story.append(Spacer(1, 3 * mm))
+    if econ_items:
+        story.append(_bullet_col(labels["economic_view"], econ_items, styles, 170 * mm, BRAND_BLUE))
+        story.append(Spacer(1, 3 * mm))
+    story.append(Spacer(1, 3 * mm))
+
+    # Buyer landscape
+    story.append(Paragraph(labels["buyer_section"], styles["section"]))
+    for flowable in _buyer_landscape(market, labels, styles):
+        story.append(flowable)
+    story.append(Spacer(1, 7 * mm))
+
+    # Risks
+    story.append(Paragraph(labels["risk_section"], styles["section"]))
+    story.append(_risk_table(risks, styles))
+    story.append(Spacer(1, 5 * mm))
+
+    # Next steps
+    story.append(Paragraph(labels["action_section"], styles["section"]))
+    story.append(_steps_table(next_steps, styles))
+    story.append(Spacer(1, 7 * mm))
+
+    # Evidence appendix
+    story.append(Paragraph(labels["sources_section"], styles["section"]))
+    story.append(_source_table(sources, labels, styles))
+
+    # ── render ───────────────────────────────────────────────────────────────
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+        topMargin=22 * mm,
+        bottomMargin=14 * mm,
+        title=f"Liquisto Briefing - {company_name}",
+        author="Liquisto",
+    )
+    hf = _make_header_footer(labels["page_label"])
+    doc.build(story, onFirstPage=hf, onLaterPages=hf)
+    return buffer.getvalue()

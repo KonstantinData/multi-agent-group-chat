@@ -3,77 +3,14 @@ from __future__ import annotations
 
 import argparse
 import os
-import signal
 import subprocess
 import sys
 import time
 import socket
 import webbrowser
-from typing import Iterable
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = sys.executable
-PORT = 8501
-URL = f"http://localhost:{PORT}"
-
-
-def _listening_pids_windows(port: int) -> list[int]:
-    out = subprocess.check_output(
-        ["netstat", "-ano"],
-        text=True,
-        stderr=subprocess.DEVNULL,
-    )
-    pids = []
-    for line in out.splitlines():
-        if f":{port}" not in line:
-            continue
-        upper = line.upper()
-        if "LISTENING" not in upper and "ABH" not in upper:
-            continue
-        parts = line.split()
-        if parts and parts[-1].isdigit():
-            pids.append(int(parts[-1]))
-    return pids
-
-
-def _listening_pids_posix(port: int) -> list[int]:
-    proc = subprocess.run(
-        ["lsof", "-ti", f"tcp:{port}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return [int(pid) for pid in proc.stdout.split() if pid.isdigit()]
-
-
-def _listening_pids(port: int) -> list[int]:
-    if os.name == "nt":
-        return _listening_pids_windows(port)
-    return _listening_pids_posix(port)
-
-
-def _terminate_pids(pids: Iterable[int]) -> None:
-    for pid in pids:
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"],
-                    capture_output=True,
-                    check=False,
-                )
-            else:
-                os.kill(pid, signal.SIGTERM)
-            print(f"  Killed old process PID {pid}")
-        except OSError:
-            continue
-
-
-def kill_port(port):
-    """Kill any process using the given port."""
-    try:
-        _terminate_pids(_listening_pids(port))
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
 
 
 def port_free(port):
@@ -105,6 +42,12 @@ def wait_for_server(port, timeout=30):
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch the Streamlit UI for the Liquisto pipeline.")
     parser.add_argument(
+        "--port",
+        type=int,
+        default=8501,
+        help="Port for the Streamlit server.",
+    )
+    parser.add_argument(
         "--foreground",
         action="store_true",
         help="Keep the launcher attached to the Streamlit process instead of exiting after startup.",
@@ -114,20 +57,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    port = args.port
+    url = f"http://localhost:{port}"
 
     print("=" * 60)
     print("  Liquisto Market Intelligence Pipeline")
     print("=" * 60)
 
-    # Step 1: Free port
-    print(f"\n[1/4] Ensuring port {PORT} is free...")
-    if not port_free(PORT):
-        kill_port(PORT)
-        time.sleep(1)
-        if not port_free(PORT):
-            print(f"  ERROR: Port {PORT} still in use. Cannot start.")
-            return 1
-    print(f"  Port {PORT} is free.")
+    # Step 1: Validate port
+    print(f"\n[1/4] Checking port {port}...")
+    if not port_free(port):
+        print(f"  ERROR: Port {port} is already in use. Stop the existing service or start with --port.")
+        return 1
+    print(f"  Port {port} is free.")
 
     # Step 2: Preflight
     print("\n[2/4] Running preflight checks...")
@@ -144,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     popen_kwargs = {
         "args": [
             PYTHON, "-m", "streamlit", "run", "ui/app.py",
-            "--server.headless", "true", "--server.port", str(PORT),
+            "--server.headless", "true", "--server.port", str(port),
         ],
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -156,19 +98,19 @@ def main(argv: list[str] | None = None) -> int:
     proc = subprocess.Popen(**popen_kwargs)
 
     print(f"  Waiting for server (PID {proc.pid})...")
-    if not wait_for_server(PORT, timeout=30):
+    if not wait_for_server(port, timeout=30):
         print("  ERROR: Server did not start within 30 seconds.")
         proc.kill()
         return 1
-    print(f"  Server is running on {URL}")
+    print(f"  Server is running on {url}")
 
     # Step 4: Open browser
     print(f"\n[4/4] Opening browser...")
-    webbrowser.open(URL)
+    webbrowser.open(url)
     print(f"  Browser opened.")
 
     print("\n" + "=" * 60)
-    print(f"  Streamlit running at {URL}")
+    print(f"  Streamlit running at {url}")
     if args.foreground:
         print("  Press Ctrl+C to stop the server.")
     else:

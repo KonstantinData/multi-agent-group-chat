@@ -1,0 +1,148 @@
+"""Short-term memory for the current run."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class ShortTermMemoryStore:
+    facts: list[str] = field(default_factory=list)
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    market_signals: list[str] = field(default_factory=list)
+    buyer_hypotheses: list[str] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
+    next_actions: list[str] = field(default_factory=list)
+    rejected_claims: list[str] = field(default_factory=list)
+    task_outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    task_statuses: dict[str, str] = field(default_factory=dict)
+    section_outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    critic_approvals: dict[str, bool] = field(default_factory=dict)
+    critic_reviews: dict[str, dict[str, Any]] = field(default_factory=dict)
+    accepted_points: dict[str, list[str]] = field(default_factory=dict)
+    open_points: dict[str, list[str]] = field(default_factory=dict)
+    revision_history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    worker_reports: list[dict[str, Any]] = field(default_factory=list)
+    department_packages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    department_conversations: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    department_workspaces: dict[str, dict[str, Any]] = field(default_factory=dict)
+    follow_up_sessions: list[dict[str, Any]] = field(default_factory=list)
+    usage_totals: dict[str, int] = field(
+        default_factory=lambda: {
+            "llm_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "search_calls": 0,
+            "page_fetches": 0,
+        }
+    )
+
+    def open_department_workspace(self, department: str) -> None:
+        """Reserve an isolated namespace for a department run."""
+        self.department_workspaces[department] = {
+            "task_outputs": {},
+            "task_statuses": {},
+            "critic_approvals": {},
+            "critic_reviews": {},
+            "accepted_points": {},
+            "open_points": {},
+            "revision_history": {},
+            "worker_reports": [],
+            "facts": [],
+            "sources": [],
+            "open_questions": [],
+        }
+
+    def ingest_worker_report(self, report: dict[str, Any], *, department: str | None = None) -> None:
+        task_key = str(report.get("task_key", "")).strip()
+        section = str(report.get("section", "")).strip()
+        payload = report.get("payload", {})
+        if task_key:
+            self.task_outputs[task_key] = payload
+            self.task_statuses.setdefault(task_key, "submitted")
+        if section:
+            self.section_outputs[section] = payload
+        self.worker_reports.append(report)
+        self.facts.extend(report.get("facts", []))
+        self.market_signals.extend(report.get("market_signals", []))
+        self.buyer_hypotheses.extend(report.get("buyer_hypotheses", []))
+        self.open_questions.extend(report.get("open_questions", []))
+        self.next_actions.extend(report.get("next_actions", []))
+        self.sources.extend(report.get("sources", []))
+        for key, value in report.get("usage", {}).items():
+            if key in self.usage_totals:
+                self.usage_totals[key] += int(value or 0)
+        if department and department in self.department_workspaces:
+            ws = self.department_workspaces[department]
+            if task_key:
+                ws["task_outputs"][task_key] = payload
+                ws["task_statuses"].setdefault(task_key, "submitted")
+            ws["worker_reports"].append(report)
+            ws["facts"].extend(report.get("facts", []))
+            ws["sources"].extend(report.get("sources", []))
+            ws["open_questions"].extend(report.get("open_questions", []))
+
+    def mark_critic_review(self, task_key: str, approved: bool, issues: list[str] | None = None, review: dict[str, Any] | None = None, *, department: str | None = None) -> None:
+        self.critic_approvals[task_key] = approved
+        self.task_statuses[task_key] = "accepted" if approved else "needs_revision"
+        if review:
+            self.critic_reviews[task_key] = review
+            self.accepted_points[task_key] = list(review.get("accepted_points", []))
+            self.open_points[task_key] = list(review.get("rejected_points", []))
+            self.revision_history.setdefault(task_key, []).append(review)
+        if issues and not approved:
+            self.open_questions.extend(issues)
+        if department and department in self.department_workspaces:
+            ws = self.department_workspaces[department]
+            ws["critic_approvals"][task_key] = approved
+            ws["task_statuses"][task_key] = "accepted" if approved else "needs_revision"
+            if review:
+                ws["critic_reviews"][task_key] = review
+                ws["accepted_points"][task_key] = list(review.get("accepted_points", []))
+                ws["open_points"][task_key] = list(review.get("rejected_points", []))
+                ws["revision_history"].setdefault(task_key, []).append(review)
+
+    def store_department_package(self, department: str, package: dict[str, Any]) -> None:
+        self.department_packages[department] = package
+
+    def append_department_conversation(self, department: str, conversation: list[dict[str, Any]]) -> None:
+        existing = self.department_conversations.setdefault(department, [])
+        existing.extend(conversation)
+
+    def record_follow_up(self, answer: dict[str, Any]) -> None:
+        self.follow_up_sessions.append(answer)
+
+    def snapshot(self) -> dict[str, Any]:
+        _seen_urls: set[str] = set()
+        _unique_sources: list[dict[str, Any]] = []
+        for _s in self.sources:
+            _url = _s.get("url", "") if isinstance(_s, dict) else ""
+            if _url and _url not in _seen_urls:
+                _seen_urls.add(_url)
+                _unique_sources.append(_s)
+            elif not _url:
+                _unique_sources.append(_s)
+        return {
+            "facts": list(dict.fromkeys(self.facts)),
+            "sources": _unique_sources,
+            "market_signals": list(dict.fromkeys(self.market_signals)),
+            "buyer_hypotheses": list(dict.fromkeys(self.buyer_hypotheses)),
+            "open_questions": list(dict.fromkeys(self.open_questions)),
+            "next_actions": list(dict.fromkeys(self.next_actions)),
+            "rejected_claims": list(dict.fromkeys(self.rejected_claims)),
+            "task_outputs": self.task_outputs,
+            "task_statuses": self.task_statuses,
+            "section_outputs": self.section_outputs,
+            "critic_approvals": self.critic_approvals,
+            "critic_reviews": self.critic_reviews,
+            "accepted_points": self.accepted_points,
+            "open_points": self.open_points,
+            "revision_history": self.revision_history,
+            "worker_reports": self.worker_reports,
+            "department_packages": self.department_packages,
+            "department_conversations": self.department_conversations,
+            "department_workspaces": self.department_workspaces,
+            "follow_up_sessions": self.follow_up_sessions,
+            "usage_totals": self.usage_totals,
+        }

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -11,73 +10,10 @@ import urllib.request
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 PYTHON = sys.executable
-PORT = 8501
-URL = f"http://localhost:{PORT}"
 
 
 def step(num: int, total: int, label: str) -> None:
     print(f"\n[{num}/{total}] {label}")
-
-
-def _listening_pids_windows(port: int) -> list[int]:
-    out = subprocess.check_output(
-        ["netstat", "-ano"],
-        text=True,
-        stderr=subprocess.DEVNULL,
-    )
-    pids = []
-    for line in out.splitlines():
-        if f":{port}" not in line:
-            continue
-        upper = line.upper()
-        if "LISTENING" not in upper and "ABH" not in upper:
-            continue
-        parts = line.split()
-        if parts and parts[-1].isdigit():
-            pids.append(int(parts[-1]))
-    return pids
-
-
-def _listening_pids_posix(port: int) -> list[int]:
-    proc = subprocess.run(
-        ["lsof", "-ti", f"tcp:{port}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return [int(pid) for pid in proc.stdout.split() if pid.isdigit()]
-
-
-def listening_pids(port: int) -> list[int]:
-    if os.name == "nt":
-        return _listening_pids_windows(port)
-    return _listening_pids_posix(port)
-
-
-def kill_port(port: int) -> None:
-    try:
-        pids = listening_pids(port)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        print("  Could not inspect port owners.")
-        return
-
-    if not pids:
-        print("  No old process found.")
-        return
-
-    for pid in pids:
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/F"],
-                    capture_output=True,
-                    check=False,
-                )
-            else:
-                os.kill(pid, signal.SIGTERM)
-            print(f"  Killed PID {pid}")
-        except OSError:
-            continue
 
 
 def port_is_free(port: int) -> bool:
@@ -91,11 +27,20 @@ def port_is_free(port: int) -> bool:
         sock.close()
 
 
-def _popen_streamlit() -> subprocess.Popen:
+def _pick_free_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
+def _popen_streamlit(port: int) -> subprocess.Popen:
     popen_kwargs = {
         "args": [
             PYTHON, "-m", "streamlit", "run", "ui/app.py",
-            "--server.headless", "true", "--server.port", str(PORT),
+            "--server.headless", "true", "--server.port", str(port),
         ],
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -110,15 +55,15 @@ def _popen_streamlit() -> subprocess.Popen:
 def main() -> int:
     errors: list[str] = []
     proc: subprocess.Popen | None = None
+    port = _pick_free_port()
+    url = f"http://localhost:{port}"
 
-    step(1, 5, f"Kill old Streamlit processes on port {PORT}")
-    kill_port(PORT)
-    time.sleep(1)
-    if port_is_free(PORT):
+    step(1, 5, f"Select a free test port ({port})")
+    if port_is_free(port):
         print("  PASS - port is free")
     else:
-        errors.append(f"Port {PORT} still in use after cleanup")
-        print(f"  FAIL - port {PORT} still in use")
+        errors.append(f"Port {port} is unexpectedly busy")
+        print(f"  FAIL - port {port} is unexpectedly busy")
 
     step(2, 5, "Preflight checks")
     if not errors:
@@ -135,7 +80,7 @@ def main() -> int:
 
     step(3, 5, "Start Streamlit subprocess")
     if not errors:
-        proc = _popen_streamlit()
+        proc = _popen_streamlit(port)
         print(f"  Started PID {proc.pid}")
     else:
         print("  SKIPPED (previous errors)")
@@ -147,7 +92,7 @@ def main() -> int:
             probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 probe.settimeout(1)
-                probe.connect(("127.0.0.1", PORT))
+                probe.connect(("127.0.0.1", port))
                 ready = True
                 print(f"  PASS - server ready after {i + 1}s")
                 break
@@ -166,7 +111,7 @@ def main() -> int:
     step(5, 5, "HTTP response check")
     if proc and not errors:
         try:
-            resp = urllib.request.urlopen(URL, timeout=5)
+            resp = urllib.request.urlopen(url, timeout=5)
             if resp.status == 200:
                 print(f"  PASS - HTTP {resp.status}")
             else:
@@ -188,7 +133,7 @@ def main() -> int:
         return 1
 
     print("ALL 5 STEPS PASSED")
-    print(f"Streamlit reachable at {URL} (PID {proc.pid})")
+    print(f"Streamlit reachable at {url} (PID {proc.pid})")
     if proc and proc.poll() is None:
         proc.kill()
         print("Test server stopped.")

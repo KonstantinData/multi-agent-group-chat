@@ -1,0 +1,736 @@
+"""Evidence-driven research worker with optional LLM synthesis."""
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+
+from openai import OpenAI
+
+from src.config.settings import get_llm_config, get_openai_api_key
+from src.domain.intake import SupervisorBrief
+from src.models.schemas import CompanyProfile, ContactIntelligenceSection, IndustryAnalysis, MarketNetwork
+from src.orchestration.tool_policy import tool_is_allowed
+from src.research.extract import extract_product_keywords, infer_industry, summarize_visible_text
+from src.research.fetch import fetch_website_snapshot
+from src.research.search import build_buyer_queries, build_company_queries, build_market_queries, perform_search
+
+
+SECTION_MODELS = {
+    "company_profile": CompanyProfile,
+    "industry_analysis": IndustryAnalysis,
+    "market_network": MarketNetwork,
+    "contact_intelligence": ContactIntelligenceSection,
+}
+
+
+class ResearchWorker:
+    """Runs one supervisor assignment against a compact evidence pack."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._client: OpenAI | None = None
+        self._search_cache: dict[str, list[dict[str, str]]] = {}
+        self._page_cache: dict[str, dict[str, str | bool]] = {}
+
+    def run(
+        self,
+        *,
+        brief: SupervisorBrief,
+        task_key: str,
+        target_section: str,
+        objective: str,
+        current_sections: dict[str, Any],
+        query_overrides: list[str] | None = None,
+        allowed_tools: list[str] | tuple[str, ...] | None = None,
+        model_name: str | None = None,
+        revision_request: dict[str, Any] | None = None,
+        role_memory: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        granted_tools = tuple(allowed_tools or ())
+        hints = self._derive_research_hints(brief)
+        queries = query_overrides or self._build_queries(
+            brief=brief,
+            task_key=task_key,
+            current_section=current_sections.get(target_section, {}),
+        )
+        search_results, search_calls = self._search_queries(queries, granted_tools=granted_tools)
+        page_evidence, page_fetches = self._fetch_supporting_pages(search_results, granted_tools=granted_tools)
+        existing_payload = dict(current_sections.get(target_section, {}))
+
+        evidence_pack = {
+            "brief": {
+                "company_name": brief.company_name,
+                "submitted_company_name": brief.submitted_company_name,
+                "submitted_web_domain": brief.submitted_web_domain,
+                "verified_company_name": brief.verified_company_name,
+                "verified_legal_name": brief.verified_legal_name,
+                "name_confidence": brief.name_confidence,
+                "web_domain": brief.web_domain,
+                "homepage_url": brief.homepage_url,
+                "industry_hint": hints["industry_hint"],
+                "product_keywords": hints["product_keywords"],
+                "visible_text_excerpt": brief.raw_homepage_excerpt,
+                "observations": brief.observations,
+            },
+            "objective": objective,
+            "task_key": task_key,
+            "target_section": target_section,
+            "current_section": existing_payload,
+            "queries": queries,
+            "search_results": search_results,
+            "page_evidence": page_evidence,
+            "allowed_tools": list(granted_tools),
+            "model_name": model_name or self.name,
+            "revision_request": revision_request or {},
+            "role_memory": role_memory or [],
+        }
+
+        llm_usage = {
+            "llm_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        fallback_note: str | None = None
+        used_llm = False
+        if self._llm_enabled(granted_tools=granted_tools):
+            try:
+                used_llm = True
+                synthesis = self._llm_synthesis(evidence_pack, model_name=model_name)
+                llm_usage = synthesis.pop("usage", llm_usage)
+            except Exception as exc:
+                synthesis = self._fallback_synthesis(evidence_pack)
+                fallback_note = f"LLM synthesis failed for {task_key}: {exc}"
+        else:
+            synthesis = self._fallback_synthesis(evidence_pack)
+        if fallback_note:
+            synthesis.setdefault("open_questions", []).append(fallback_note)
+        try:
+            payload = self._merge_payload(
+                section=target_section,
+                current_payload=existing_payload,
+                payload_updates=self._normalize_payload_updates(target_section, synthesis.get("payload_updates", {})),
+                brief=brief,
+                search_results=search_results,
+            )
+        except Exception as exc:
+            if not used_llm:
+                raise
+            fallback_note = f"LLM payload normalization failed for {task_key}: {exc}"
+            synthesis = self._fallback_synthesis(evidence_pack)
+            synthesis.setdefault("open_questions", []).append(fallback_note)
+            payload = self._merge_payload(
+                section=target_section,
+                current_payload=existing_payload,
+                payload_updates=self._normalize_payload_updates(target_section, synthesis.get("payload_updates", {})),
+                brief=brief,
+                search_results=search_results,
+            )
+
+        return {
+            "task_key": task_key,
+            "section": target_section,
+            "worker": self.name,
+            "objective": objective,
+            "model_name": model_name or self.name,
+            "allowed_tools": list(granted_tools),
+            "revision_request": revision_request or {},
+            "payload": payload,
+            "facts": synthesis.get("facts", []),
+            "market_signals": synthesis.get("market_signals", []),
+            "buyer_hypotheses": synthesis.get("buyer_hypotheses", []),
+            "open_questions": synthesis.get("open_questions", []),
+            "next_actions": synthesis.get("next_actions", []),
+            "sources": payload.get("sources", []),
+            "queries_used": queries,
+            "usage": {
+                **llm_usage,
+                "search_calls": search_calls,
+                "page_fetches": page_fetches,
+            },
+        }
+
+    def _derive_research_hints(self, brief: SupervisorBrief) -> dict[str, Any]:
+        industry_hint = infer_industry(
+            brief.page_title,
+            brief.meta_description,
+            brief.raw_homepage_excerpt,
+        )
+        product_keywords = extract_product_keywords(brief.raw_homepage_excerpt)
+        return {
+            "industry_hint": industry_hint or "n/v",
+            "product_keywords": product_keywords,
+        }
+
+    def _build_queries(self, *, brief: SupervisorBrief, task_key: str, current_section: dict[str, Any] | None = None) -> list[str]:
+        hints = self._derive_research_hints(brief)
+        company_name = brief.company_name
+        industry_hint = hints["industry_hint"]
+        product_keywords = hints["product_keywords"]
+        if task_key in {"company_fundamentals", "economic_commercial_situation", "product_asset_scope"}:
+            queries = build_company_queries(company_name, brief.normalized_domain)
+            if task_key == "economic_commercial_situation":
+                queries.extend(
+                    [
+                        f"\"{company_name}\" revenue growth demand",
+                        f"\"{company_name}\" inventory excess restructuring",
+                    ]
+                )
+            if task_key == "product_asset_scope":
+                queries.extend(
+                    [
+                        f"site:{brief.normalized_domain} {company_name} spare parts components",
+                        f"\"{company_name}\" product portfolio materials",
+                    ]
+                )
+            return queries
+
+        if task_key in {"market_situation", "repurposing_circularity", "analytics_operational_improvement"}:
+            queries = build_market_queries(company_name, industry_hint, product_keywords)
+            if task_key == "repurposing_circularity":
+                queries.extend(
+                    [
+                        f"{company_name} recycling reuse materials",
+                        f"{' '.join(product_keywords[:3])} circular economy repurposing",
+                    ]
+                )
+            if task_key == "analytics_operational_improvement":
+                queries.extend(
+                    [
+                        f"\"{company_name}\" supply chain planning data",
+                        f"{industry_hint} inventory visibility analytics",
+                    ]
+                )
+            return queries
+
+        if task_key in {"contact_discovery", "contact_qualification"}:
+            buyer_candidates = (current_section or {}).get("buyer_candidates", [])
+            queries = []
+            for candidate in buyer_candidates[:3]:
+                firm = ""
+                if isinstance(candidate, str):
+                    firm = candidate.strip()
+                elif isinstance(candidate, dict):
+                    firm = (candidate.get("company_name") or candidate.get("name") or "").strip()
+                if firm:
+                    queries.extend([
+                        f'"{firm}" procurement head supply chain director',
+                        f'"{firm}" COO VP operations asset management',
+                    ])
+            if not queries:
+                queries = [
+                    f'"{company_name}" procurement manager supply chain director',
+                    f'"{company_name}" head of operations asset management',
+                    f'{industry_hint} procurement director decision maker LinkedIn',
+                    f'"{company_name}" key contacts leadership team',
+                ]
+            return queries[:4]
+
+        queries = build_buyer_queries(company_name, product_keywords, industry_hint)
+        if task_key == "peer_companies":
+            queries.extend(
+                [
+                    f"\"{company_name}\" competitors manufacturers",
+                    f"{industry_hint} manufacturers europe competitors",
+                ]
+            )
+        if task_key == "monetization_redeployment":
+            queries.extend(
+                [
+                    f"{' '.join(product_keywords[:3])} distributors brokers marketplace",
+                    f"{company_name} customers aftermarket service",
+                ]
+            )
+        return queries
+
+    def _search_queries(
+        self,
+        queries: list[str],
+        *,
+        granted_tools: tuple[str, ...],
+    ) -> tuple[list[dict[str, str]], int]:
+        if not tool_is_allowed(granted_tools, "search"):
+            return [], 0
+        results: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        search_calls = 0
+        for query in queries[:4]:
+            if not query.strip():
+                continue
+            if query not in self._search_cache:
+                search_calls += 1
+                self._search_cache[query] = perform_search(query, max_results=3, timeout=3)
+            for item in self._search_cache.get(query, []):
+                url = str(item.get("url", "")).strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                record = {
+                    "title": str(item.get("title", "n/v")),
+                    "url": url,
+                    "source_type": str(item.get("source_type", "secondary")),
+                    "summary": str(item.get("summary", "")),
+                }
+                results.append(record)
+                if len(results) >= 5:
+                    return results, search_calls
+        return results, search_calls
+
+    def _fetch_supporting_pages(
+        self,
+        results: list[dict[str, str]],
+        *,
+        granted_tools: tuple[str, ...],
+    ) -> tuple[list[dict[str, str]], int]:
+        if not tool_is_allowed(granted_tools, "page_fetch"):
+            return [], 0
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return (
+                [
+                    {
+                        "title": str(item.get("title", "n/v")),
+                        "url": str(item.get("url", "")),
+                        "reachable": "skipped",
+                        "page_title": str(item.get("title", "n/v")),
+                        "meta_description": "",
+                        "visible_text_excerpt": "",
+                    }
+                    for item in results[:2]
+                ],
+                0,
+            )
+        page_evidence: list[dict[str, str]] = []
+        fetches = 0
+        for item in results[:2]:
+            url = str(item.get("url", "")).strip()
+            if not url.startswith("http"):
+                continue
+            if url not in self._page_cache:
+                fetches += 1
+                self._page_cache[url] = fetch_website_snapshot(url, timeout=3)
+            snapshot = self._page_cache[url]
+            page_evidence.append(
+                {
+                    "title": str(item.get("title", "n/v")),
+                    "url": url,
+                    "reachable": "yes" if snapshot.get("reachable") else "no",
+                    "page_title": str(snapshot.get("title", "")),
+                    "meta_description": str(snapshot.get("meta_description", "")),
+                    "visible_text_excerpt": summarize_visible_text(str(snapshot.get("visible_text", "")), limit=500),
+                }
+            )
+        return page_evidence, fetches
+
+    def _llm_enabled(self, *, granted_tools: tuple[str, ...]) -> bool:
+        if not tool_is_allowed(granted_tools, "llm_structured"):
+            return False
+        cfg = get_llm_config(role=self.name)
+        if not cfg.get("api_key_present"):
+            return False
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return False
+        return os.getenv("LIQUISTO_DISABLE_LLM", "").strip().lower() not in {"1", "true", "yes"}
+
+    def _client_instance(self) -> OpenAI:
+        if self._client is None:
+            self._client = OpenAI(api_key=get_openai_api_key())
+        return self._client
+
+    def _llm_synthesis(self, evidence_pack: dict[str, Any], *, model_name: str | None = None) -> dict[str, Any]:
+        config = get_llm_config(role=self.name, model=model_name)
+        response = self._client_instance().chat.completions.create(
+            model=str(config["structured_model"]),
+            temperature=float(config["temperature"]),
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Liquisto research worker. Use only the supplied evidence. "
+                        "Never invent companies, URLs, or claims. If evidence is weak, keep outputs conservative. "
+                        "Return JSON with keys: payload_updates, facts, market_signals, buyer_hypotheses, "
+                        "open_questions, next_actions. payload_updates must only contain fields for the target section."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(evidence_pack, ensure_ascii=False),
+                },
+            ],
+        )
+        raw_content = response.choices[0].message.content or "{}"
+        try:
+            payload = json.loads(raw_content)
+        except json.JSONDecodeError:
+            payload = {"payload_updates": {}, "open_questions": ["Structured output could not be parsed reliably."]}
+        usage = getattr(response, "usage", None)
+        payload["usage"] = {
+            "llm_calls": 1,
+            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+        }
+        return payload
+
+    def _fallback_synthesis(self, evidence_pack: dict[str, Any]) -> dict[str, Any]:
+        brief = evidence_pack["brief"]
+        task_key = str(evidence_pack["task_key"])
+        results = evidence_pack.get("search_results", [])
+        pages = evidence_pack.get("page_evidence", [])
+        titles = [str(item.get("title", "n/v")) for item in results[:4]]
+        excerpts = [str(item.get("visible_text_excerpt", "")).strip() for item in pages if item.get("visible_text_excerpt")]
+
+        payload_updates: dict[str, Any] = {}
+        facts = [text for text in [brief.get("visible_text_excerpt", ""), *titles[:2]] if text and text != "n/v"][:4]
+        market_signals: list[str] = []
+        buyer_hypotheses: list[str] = []
+        open_questions: list[str] = []
+        next_actions: list[str] = []
+
+        if evidence_pack["target_section"] == "company_profile":
+            payload_updates = {
+                "company_name": brief["company_name"],
+                "website": brief["homepage_url"],
+                "industry": brief["industry_hint"] or "n/v",
+                "description": brief["visible_text_excerpt"] or "n/v",
+                "products_and_services": brief["product_keywords"][:6],
+            }
+            if task_key == "economic_commercial_situation":
+                payload_updates["economic_situation"] = {
+                    "recent_events": titles[:3],
+                    "inventory_signals": [
+                        "Public web evidence on inventory pressure remains limited."
+                        if not any("inventory" in title.lower() for title in titles)
+                        else title
+                        for title in titles[:1]
+                    ],
+                    "assessment": "Public signals indicate that commercial pressure should be validated further.",
+                    "financial_pressure": "n/v",
+                }
+                next_actions.append("Validate commercial pressure and stock dynamics directly in the meeting.")
+            if task_key == "product_asset_scope":
+                payload_updates["product_asset_scope"] = [
+                    f"{keyword} appears likely to matter for buyer, resale, redeployment, repurposing, or aftermarket analysis."
+                    for keyword in brief["product_keywords"][:4]
+                ] or ["No specific product family or asset scope was validated yet."]
+                next_actions.append("Validate which SKUs, spare parts, materials, or assets are commercially movable.")
+
+        elif evidence_pack["target_section"] == "industry_analysis":
+            market_signals = titles[:3]
+            payload_updates = {
+                "industry_name": brief["industry_hint"] or "n/v",
+                "trend_direction": "gemischt" if titles else "n/v",
+                "key_trends": titles[:4],
+                "demand_outlook": "Public demand signals are mixed and require validation." if titles else "n/v",
+                "assessment": "Market evidence is indicative and should be strengthened with deeper external sources.",
+            }
+            if task_key == "repurposing_circularity":
+                payload_updates["repurposing_signals"] = [
+                    f"Adjacent reuse of {keyword} may be plausible but remains unvalidated."
+                    for keyword in brief["product_keywords"][:3]
+                ] or ["No validated repurposing path found yet."]
+                next_actions.append("Test adjacent reuse and circular-economy partners for unused materials.")
+            if task_key == "analytics_operational_improvement":
+                payload_updates["analytics_signals"] = [
+                    "Operational visibility and planning signals should be validated during discovery."
+                ]
+                next_actions.append("Probe forecasting, inventory visibility, and reporting bottlenecks in the meeting.")
+
+        elif evidence_pack["target_section"] == "market_network":
+            buyer_hypotheses = titles[:3]
+            companies = [
+                {
+                    "name": title.split(" - ")[0][:80] or "n/v",
+                    "city": "n/v",
+                    "country": "n/v",
+                    "relevance": "Indicative public-web match.",
+                }
+                for title in titles[:3]
+            ]
+            payload_updates = {
+                "target_company": brief["company_name"],
+            }
+            if task_key == "peer_companies":
+                payload_updates["peer_competitors"] = {
+                    "companies": companies,
+                    "assessment": "Peer landscape is indicative and should be validated further.",
+                }
+                next_actions.append("Validate which peer companies actually overlap on product families.")
+            if task_key == "monetization_redeployment":
+                payload_updates["downstream_buyers"] = {
+                    "companies": companies,
+                    "assessment": "Downstream buyer path remains indicative.",
+                }
+                payload_updates["service_providers"] = {
+                    "companies": [],
+                    "assessment": "Service and aftermarket path remains open.",
+                }
+                payload_updates["cross_industry_buyers"] = {
+                    "companies": [],
+                    "assessment": "Cross-industry path remains unvalidated.",
+                }
+                payload_updates["monetization_paths"] = [
+                    f"Distributor or aftermarket path may exist for {keyword}."
+                    for keyword in brief["product_keywords"][:3]
+                ] or ["No credible monetization path validated yet."]
+                payload_updates["redeployment_paths"] = [
+                    f"Redeployment to adjacent users may be plausible for {keyword}."
+                    for keyword in brief["product_keywords"][:2]
+                ] or ["No validated redeployment path found yet."]
+                next_actions.append("Check CRM coverage and likely buyer appetite before the meeting.")
+
+        elif evidence_pack["target_section"] == "contact_intelligence":
+            contacts = []
+            for result in results[:4]:
+                title = str(result.get("title", "n/v"))
+                url = str(result.get("url", ""))
+                contacts.append({
+                    "name": "n/v",
+                    "firma": title.split(" - ")[0][:80] if " - " in title else title[:80],
+                    "rolle_titel": "n/v",
+                    "funktion": "n/v",
+                    "senioritaet": "n/v",
+                    "standort": "n/v",
+                    "quelle": url,
+                    "confidence": "inferred",
+                    "relevance_reason": "n/v",
+                    "suggested_outreach_angle": "n/v",
+                })
+            payload_updates = {
+                "contacts": contacts,
+                "prioritized_contacts": [],
+                "firms_searched": len({c["firma"] for c in contacts if c["firma"] != "n/v"}),
+                "contacts_found": len(contacts),
+                "coverage_quality": "low" if contacts else "n/v",
+                "narrative_summary": "Contact intelligence coverage is limited. Further targeted research required.",
+                "open_questions": ["Which decision-makers at buyer firms are most relevant for Liquisto?"],
+                "sources": [],
+            }
+            open_questions.append("No verified contacts found — validate decision-makers directly before outreach.")
+
+        if not results:
+            open_questions.append(f"No external search evidence found for {task_key}.")
+        if not excerpts:
+            open_questions.append(f"Supporting page excerpts remain limited for {task_key}.")
+
+        return {
+            "payload_updates": payload_updates,
+            "facts": facts,
+            "market_signals": market_signals,
+            "buyer_hypotheses": buyer_hypotheses,
+            "open_questions": open_questions,
+            "next_actions": next_actions,
+        }
+
+    def _merge_payload(
+        self,
+        *,
+        section: str,
+        current_payload: dict[str, Any],
+        payload_updates: dict[str, Any],
+        brief: SupervisorBrief,
+        search_results: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        hints = self._derive_research_hints(brief)
+        merged = self._deep_merge(current_payload, payload_updates)
+        merged["sources"] = self._merge_sources(
+            current_payload.get("sources", []),
+            brief.sources,
+            search_results,
+            merged.get("sources", []),
+        )
+        if section == "company_profile":
+            merged.setdefault("company_name", brief.company_name)
+            merged.setdefault("website", brief.homepage_url)
+            merged.setdefault("industry", hints["industry_hint"] or "n/v")
+        if section == "industry_analysis":
+            merged.setdefault("industry_name", hints["industry_hint"] or "n/v")
+        if section == "market_network":
+            merged.setdefault("target_company", brief.company_name)
+        if section == "contact_intelligence":
+            merged.setdefault("contacts", [])
+            merged.setdefault("prioritized_contacts", [])
+            merged.setdefault("firms_searched", 0)
+            merged.setdefault("contacts_found", 0)
+            merged.setdefault("coverage_quality", "n/v")
+            merged.setdefault("narrative_summary", "n/v")
+            merged.setdefault("open_questions", [])
+        merged = self._sanitize_for_section(section, merged)
+        model = SECTION_MODELS[section].model_validate(merged)
+        return model.model_dump(mode="json")
+
+    def _normalize_payload_updates(self, section: str, payload_updates: Any) -> dict[str, Any]:
+        if not isinstance(payload_updates, dict):
+            return {}
+        nested = payload_updates.get(section)
+        if isinstance(nested, dict):
+            return nested
+        return payload_updates
+
+    def _sanitize_for_section(self, section: str, payload: dict[str, Any]) -> dict[str, Any]:
+        cleaned = self._deep_merge({}, payload)
+        if section == "company_profile":
+            for key in ("products_and_services", "product_asset_scope"):
+                cleaned[key] = self._coerce_string_list(cleaned.get(key, []))
+            cleaned["key_people"] = self._coerce_people(cleaned.get("key_people", []))
+            cleaned["sources"] = self._coerce_sources(cleaned.get("sources", []))
+            economic = cleaned.get("economic_situation", {})
+            if isinstance(economic, dict):
+                economic["recent_events"] = self._coerce_string_list(economic.get("recent_events", []))
+                economic["inventory_signals"] = self._coerce_string_list(economic.get("inventory_signals", []))
+                cleaned["economic_situation"] = economic
+        elif section == "industry_analysis":
+            for key in ("key_trends", "overcapacity_signals", "repurposing_signals", "analytics_signals"):
+                cleaned[key] = self._coerce_string_list(cleaned.get(key, []))
+            cleaned["sources"] = self._coerce_sources(cleaned.get("sources", []))
+        elif section == "market_network":
+            for tier_key in ("peer_competitors", "downstream_buyers", "service_providers", "cross_industry_buyers"):
+                tier = cleaned.get(tier_key, {})
+                if isinstance(tier, dict):
+                    tier["companies"] = self._coerce_company_records(tier.get("companies", []))
+                    tier["sources"] = self._coerce_sources(tier.get("sources", []))
+                    cleaned[tier_key] = tier
+            cleaned["monetization_paths"] = self._coerce_string_list(cleaned.get("monetization_paths", []))
+            cleaned["redeployment_paths"] = self._coerce_string_list(cleaned.get("redeployment_paths", []))
+        elif section == "contact_intelligence":
+            cleaned["contacts"] = self._coerce_contact_records(cleaned.get("contacts", []))
+            cleaned["prioritized_contacts"] = self._coerce_contact_records(cleaned.get("prioritized_contacts", []))
+            cleaned["open_questions"] = self._coerce_string_list(cleaned.get("open_questions", []))
+            cleaned["sources"] = self._coerce_sources(cleaned.get("sources", []))
+        return cleaned
+
+    def _coerce_string_list(self, items: Any) -> list[str]:
+        if not isinstance(items, list):
+            return []
+        values: list[str] = []
+        for item in items:
+            if isinstance(item, str):
+                text = item.strip()
+            elif isinstance(item, dict):
+                text = " | ".join(str(value).strip() for value in item.values() if str(value).strip())
+            else:
+                text = str(item).strip()
+            if text:
+                values.append(text)
+        return values
+
+    def _coerce_people(self, items: Any) -> list[dict[str, str]]:
+        if not isinstance(items, list):
+            return []
+        people: list[dict[str, str]] = []
+        for item in items:
+            if isinstance(item, dict):
+                people.append(
+                    {
+                        "name": str(item.get("name", "n/v")).strip() or "n/v",
+                        "role": str(item.get("role", "n/v")).strip() or "n/v",
+                    }
+                )
+            elif isinstance(item, str) and item.strip():
+                people.append({"name": item.strip(), "role": "n/v"})
+        return people
+
+    def _coerce_company_records(self, items: Any) -> list[dict[str, str]]:
+        if not isinstance(items, list):
+            return []
+        companies: list[dict[str, str]] = []
+        for item in items:
+            if isinstance(item, dict):
+                companies.append(
+                    {
+                        "name": str(item.get("name", "n/v")).strip() or "n/v",
+                        "city": str(item.get("city", "n/v")).strip() or "n/v",
+                        "country": str(item.get("country", "n/v")).strip() or "n/v",
+                        "relevance": str(item.get("relevance", "n/v")).strip() or "n/v",
+                    }
+                )
+            elif isinstance(item, str) and item.strip():
+                companies.append({"name": item.strip(), "city": "n/v", "country": "n/v", "relevance": "n/v"})
+        return companies
+
+    def _coerce_contact_records(self, items: Any) -> list[dict[str, str]]:
+        if not isinstance(items, list):
+            return []
+        contacts: list[dict[str, str]] = []
+        for item in items:
+            if isinstance(item, dict):
+                contacts.append({
+                    "name": str(item.get("name", "n/v")).strip() or "n/v",
+                    "firma": str(item.get("firma", "n/v")).strip() or "n/v",
+                    "rolle_titel": str(item.get("rolle_titel", "n/v")).strip() or "n/v",
+                    "funktion": str(item.get("funktion", "n/v")).strip() or "n/v",
+                    "senioritaet": str(item.get("senioritaet", "n/v")).strip() or "n/v",
+                    "standort": str(item.get("standort", "n/v")).strip() or "n/v",
+                    "quelle": str(item.get("quelle", "n/v")).strip() or "n/v",
+                    "confidence": str(item.get("confidence", "inferred")).strip() or "inferred",
+                    "relevance_reason": str(item.get("relevance_reason", "n/v")).strip() or "n/v",
+                    "suggested_outreach_angle": str(item.get("suggested_outreach_angle", "n/v")).strip() or "n/v",
+                })
+            elif isinstance(item, str) and item.strip():
+                contacts.append({
+                    "name": item.strip(), "firma": "n/v", "rolle_titel": "n/v",
+                    "funktion": "n/v", "senioritaet": "n/v", "standort": "n/v",
+                    "quelle": "n/v", "confidence": "inferred",
+                    "relevance_reason": "n/v", "suggested_outreach_angle": "n/v",
+                })
+        return contacts
+
+    def _coerce_sources(self, items: Any) -> list[dict[str, str]]:
+        if not isinstance(items, list):
+            return []
+        sources: list[dict[str, str]] = []
+        for item in items:
+            if isinstance(item, dict):
+                url = str(item.get("url", "")).strip()
+                title = str(item.get("title", "")).strip() or url or "n/v"
+                if not url:
+                    continue
+                sources.append(
+                    {
+                        "title": title,
+                        "url": url,
+                        "source_type": str(item.get("source_type", "secondary")).strip() or "secondary",
+                        "summary": str(item.get("summary", "")).strip(),
+                    }
+                )
+            elif isinstance(item, str) and item.strip():
+                sources.append(
+                    {
+                        "title": item.strip(),
+                        "url": item.strip(),
+                        "source_type": "secondary",
+                        "summary": "",
+                    }
+                )
+        return sources
+
+    def _merge_sources(self, *source_lists: list[dict[str, Any]]) -> list[dict[str, str]]:
+        merged: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for source_list in source_lists:
+            for item in source_list:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url", "")).strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                merged.append(
+                    {
+                        "title": str(item.get("title", "n/v")),
+                        "url": url,
+                        "source_type": str(item.get("source_type", "secondary")),
+                        "summary": str(item.get("summary", ""))[:400],
+                    }
+                )
+        return merged[:10]
+
+    def _deep_merge(self, base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(base)
+        for key, value in updates.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = self._deep_merge(merged[key], value)
+            else:
+                merged[key] = value
+        return merged

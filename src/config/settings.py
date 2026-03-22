@@ -1,91 +1,126 @@
-"""Runtime configuration."""
+"""Runtime configuration helpers."""
 from __future__ import annotations
 
 import os
-import re
+from pathlib import Path
 from typing import Any
 
-from autogen import LLMConfig
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
-load_dotenv()
 
-DEFAULT_LLM_MODEL = "gpt-4.1-mini"
-DEFAULT_STRUCTURED_LLM_MODEL = "gpt-4.1-mini"
-DEFAULT_AGENT_MODELS = {
-    "concierge": "gpt-4.1-mini",
-    "company_intelligence": "gpt-4.1",
-    "strategic_signals": "gpt-5-mini",
-    "market_network": "gpt-4.1",
-    "evidence_qa": "gpt-4.1-mini",
-    "synthesis": "gpt-4.1",
-    "repair_planner": "gpt-4.1-mini",
-    "concierge_critic": "gpt-4.1-mini",
-    "company_intelligence_critic": "gpt-4.1-mini",
-    "strategic_signals_critic": "gpt-4.1-mini",
-    "market_network_critic": "gpt-4.1-mini",
-    "evidence_qa_critic": "gpt-4.1-mini",
-    "synthesis_critic": "gpt-4.1-mini",
+DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_STRUCTURED_MODEL = "gpt-4.1-mini"
+ROOT = Path(__file__).resolve().parents[2]
+ROLE_MODEL_DEFAULTS = {
+    "Supervisor": "gpt-4.1",
+    "CompanyDepartment": "gpt-4.1",
+    "MarketDepartment": "gpt-4.1",
+    "BuyerDepartment": "gpt-4.1",
+    "CompanyLead": "gpt-4.1",
+    "MarketLead": "gpt-4.1",
+    "BuyerLead": "gpt-4.1",
+    "CompanyResearcher": "gpt-4.1-mini",
+    "MarketResearcher": "gpt-4.1-mini",
+    "BuyerResearcher": "gpt-4.1-mini",
+    "CompanyCritic": "gpt-4.1",
+    "MarketCritic": "gpt-4.1",
+    "BuyerCritic": "gpt-4.1",
+    "CompanyJudge": "gpt-4.1",
+    "MarketJudge": "gpt-4.1",
+    "BuyerJudge": "gpt-4.1",
+    "CompanyCodingSpecialist": "gpt-4.1-mini",
+    "MarketCodingSpecialist": "gpt-4.1-mini",
+    "BuyerCodingSpecialist": "gpt-4.1-mini",
+    "CrossDomainStrategicAnalyst": "gpt-4.1",
+    "ReportWriter": "gpt-4.1-mini",
 }
-SUPPORTED_AG2_SERIES = "0.11.x"
-SUPPORTED_PYTHON_RANGE = ">=3.10,<3.14"
-
-STRUCTURED_OUTPUT_MODELS = (
-    "gpt-5.4",
-    "gpt-5-mini",
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
-)
-
-
-def _supports_structured_outputs(model: str) -> bool:
-    return any(model == prefix or model.startswith(f"{prefix}-") for prefix in STRUCTURED_OUTPUT_MODELS)
-
-
-def _uses_max_completion_tokens(model: str) -> bool:
-    normalized = str(model or "").strip().lower()
-    return normalized == "gpt-5" or normalized.startswith("gpt-5-")
-
-
-def _agent_env_key(agent_name: str) -> str:
-    normalized = str(agent_name or "").strip().lower()
-    normalized = normalized.replace(" ", "_")
-    return re.sub(r"[^a-z0-9_]", "_", normalized).upper()
+ROLE_STRUCTURED_MODEL_DEFAULTS = {
+    "Supervisor": "gpt-4.1",
+    "CompanyDepartment": "gpt-4.1-mini",
+    "MarketDepartment": "gpt-4.1-mini",
+    "BuyerDepartment": "gpt-4.1-mini",
+    "CompanyLead": "gpt-4.1-mini",
+    "MarketLead": "gpt-4.1-mini",
+    "BuyerLead": "gpt-4.1-mini",
+    "CompanyResearcher": "gpt-4.1-mini",
+    "MarketResearcher": "gpt-4.1-mini",
+    "BuyerResearcher": "gpt-4.1-mini",
+    "CompanyCritic": "gpt-4.1-mini",
+    "MarketCritic": "gpt-4.1-mini",
+    "BuyerCritic": "gpt-4.1-mini",
+    "CompanyJudge": "gpt-4.1-mini",
+    "MarketJudge": "gpt-4.1-mini",
+    "BuyerJudge": "gpt-4.1-mini",
+    "CompanyCodingSpecialist": "gpt-4.1-mini",
+    "MarketCodingSpecialist": "gpt-4.1-mini",
+    "BuyerCodingSpecialist": "gpt-4.1-mini",
+    "CrossDomainStrategicAnalyst": "gpt-4.1-mini",
+    "ReportWriter": "gpt-4.1-mini",
+}
 
 
-def get_model_selection(agent_name: str | None = None) -> tuple[str, str]:
-    preferred_model = os.environ.get("LLM_MODEL", DEFAULT_LLM_MODEL)
-    structured_model = os.environ.get("STRUCTURED_LLM_MODEL", DEFAULT_STRUCTURED_LLM_MODEL)
-    if agent_name:
-        env_key = _agent_env_key(agent_name)
-        preferred_model = os.environ.get(
-            f"LLM_MODEL_{env_key}",
-            DEFAULT_AGENT_MODELS.get(agent_name, preferred_model),
-        )
-        structured_model = os.environ.get(
-            f"STRUCTURED_LLM_MODEL_{env_key}",
-            preferred_model if _supports_structured_outputs(preferred_model) else structured_model,
-        )
+def get_openai_api_key() -> str:
+    """Resolve the OpenAI API key from environment or local .env."""
+    process_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if process_key:
+        return process_key
+    env_path = ROOT / ".env"
+    if env_path.exists():
+        return str(dotenv_values(env_path).get("OPENAI_API_KEY", "") or "").strip()
+    return ""
+
+
+def get_model_selection() -> tuple[str, str]:
+    """Return the chat and structured-output models for UI display."""
+    preferred_model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    structured_model = os.getenv("OPENAI_STRUCTURED_MODEL", DEFAULT_STRUCTURED_MODEL).strip() or preferred_model
     return preferred_model, structured_model
 
 
-def get_llm_config(response_format: Any | None = None, agent_name: str | None = None) -> LLMConfig:
-    preferred_model, structured_model = get_model_selection(agent_name=agent_name)
-    max_tokens = os.environ.get("LLM_MAX_TOKENS", "1400")
+def _role_env_fragment(role: str) -> str:
+    return "".join(character if character.isalnum() else "_" for character in role).upper()
 
-    model = preferred_model
-    if response_format is not None and not _supports_structured_outputs(preferred_model):
-        model = structured_model
 
-    llm_kwargs: dict[str, Any] = {
-        "model": model,
-        "api_key": os.environ["OPENAI_API_KEY"],
+def get_role_model_selection(role: str) -> tuple[str, str]:
+    """Resolve role-specific chat and structured models with env overrides."""
+    preferred_model, structured_fallback = get_model_selection()
+    env_fragment = _role_env_fragment(role)
+    role_model = (
+        os.getenv(f"OPENAI_MODEL_{env_fragment}", "").strip()
+        or ROLE_MODEL_DEFAULTS.get(role, preferred_model)
+        or preferred_model
+    )
+    role_structured = (
+        os.getenv(f"OPENAI_STRUCTURED_MODEL_{env_fragment}", "").strip()
+        or ROLE_STRUCTURED_MODEL_DEFAULTS.get(role, structured_fallback)
+        or role_model
+    )
+    return role_model, role_structured
+
+
+def summarize_runtime_models() -> str:
+    """Return a compact UI summary of role-to-model assignments."""
+    parts = [
+        f"Supervisor {get_role_model_selection('Supervisor')[0]}",
+        f"Departments {get_role_model_selection('CompanyResearcher')[1]}",
+        f"Cross-domain {get_role_model_selection('CrossDomainStrategicAnalyst')[0]}",
+        f"Report {get_role_model_selection('ReportWriter')[0]}",
+    ]
+    return " · ".join(parts)
+
+
+def get_llm_config(*, role: str | None = None, model: str | None = None, temperature: float = 0.1) -> dict[str, Any]:
+    """Return a minimal OpenAI-compatible config payload."""
+    if role:
+        selected_model, structured_model = get_role_model_selection(role)
+    else:
+        selected_model, structured_model = get_model_selection()
+    chosen_model = model or selected_model
+    api_key = get_openai_api_key()
+    return {
+        "provider": "openai",
+        "model": chosen_model,
+        "structured_model": structured_model,
+        "temperature": temperature,
+        "api_key_present": bool(api_key),
     }
-    if max_tokens:
-        token_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
-        llm_kwargs[token_key] = int(max_tokens)
-
-    return LLMConfig(llm_kwargs, response_format=response_format)

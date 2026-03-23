@@ -14,6 +14,7 @@ from src.orchestration.task_router import (
     build_department_assignments,
     build_initial_assignments,
     build_synthesis_assignments,
+    evaluate_run_conditions,
 )
 from src.orchestration.synthesis import build_synthesis_context, build_quality_review
 
@@ -201,36 +202,38 @@ def run_supervisor_loop(
             )
         )
 
-        # Evaluate run_condition for Contact department
-        # contact_discovery: run only when BuyerDepartment produced prioritized firms
-        # contact_qualification: run only after contact_discovery completes with contacts
-        # Both are modelled as a single department-level gate here; intra-department
-        # ordering is left to the Lead agent.
+        # Generic run_condition evaluation from the task contract
+        pipeline_state = {
+            "department_packages": department_packages,
+            "task_statuses": dict(run_context.short_term_memory.task_statuses),
+        }
+        runnable, skipped_tasks = evaluate_run_conditions(
+            list(department_assignment.assignments),
+            pipeline_state=pipeline_state,
+        )
+
+        # Record skipped tasks
+        for sk in skipped_tasks:
+            run_context.update_task_status(task_key=sk["task_key"], status="skipped")
+            run_context.short_term_memory.task_statuses[sk["task_key"]] = "skipped"
+            completed_backlog.append(sk)
+
+        if not runnable:
+            # All tasks in this department were skipped
+            continue
+
+        # Enrich current_section with upstream data when available
         current_section = sections.get(department_assignment.target_section, {})
         if department_name == "ContactDepartment":
             buyer_package = department_packages.get("BuyerDepartment", {})
             buyer_candidates = buyer_package.get("accepted_points", [])
-            if not buyer_candidates:
-                # run_condition "buyer_department_has_prioritized_firms" not met
-                # Mark all Contact tasks as skipped — no execution, no artifact
-                for da in department_assignment.assignments:
-                    run_context.update_task_status(task_key=da.task_key, status="skipped")
-                    run_context.short_term_memory.task_statuses[da.task_key] = "skipped"
-                    completed_backlog.append(
-                        {
-                            "task_key": da.task_key,
-                            "label": da.label,
-                            "target_section": da.target_section,
-                            "status": "skipped",
-                        }
-                    )
-                continue
-            current_section = {**current_section, "buyer_candidates": buyer_candidates}
+            if buyer_candidates:
+                current_section = {**current_section, "buyer_candidates": buyer_candidates}
 
         department_runtime = agents["departments"][department_name]
         section_payload, department_messages, package = department_runtime.run(
             brief=brief,
-            assignments=list(department_assignment.assignments),
+            assignments=runnable,
             current_section=current_section,
             supervisor=agents["supervisor"],
             memory_store=run_context.short_term_memory,

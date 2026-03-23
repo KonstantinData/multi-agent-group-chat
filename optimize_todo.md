@@ -137,7 +137,7 @@ can still be `medium` confidence if the input packages were strong.
 
 Judge decision → task status mapping:
 
-- **accept** → status `accepted`: all `core` rules passed + at least one `supporting` passed
+- **accept** → status `accepted`: all `core` rules passed (supporting rules improve confidence but are not required for acceptance — zero supporting with all core passed yields `accepted` with `confidence: "medium"`)
 - **accept_degraded** → status `degraded`: at least one `core` rule passed, but not all → `confidence: "low"`, must generate `open_questions` from failed rules
 - **reject** → status `rejected`: no `core` rule passed
 

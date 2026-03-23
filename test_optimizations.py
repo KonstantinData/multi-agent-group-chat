@@ -352,3 +352,116 @@ def test_shared_search_cache_across_departments():
     rt2 = DepartmentRuntime("MarketDepartment", search_cache=cache)
     # Both workers should share the same cache object
     assert rt1.lead.worker._search_cache is rt2.lead.worker._search_cache
+
+
+# ---------------------------------------------------------------------------
+# 7. Assignment carries contract fields from use_cases.py
+# ---------------------------------------------------------------------------
+
+def test_assignment_carries_contract_fields():
+    from src.domain.intake import SupervisorBrief
+    from src.orchestration.task_router import build_initial_assignments
+    brief = SupervisorBrief(
+        submitted_company_name="TestCo", submitted_web_domain="testco.de",
+        verified_company_name="TestCo", verified_legal_name="TestCo",
+        name_confidence="high", website_reachable=True,
+        homepage_url="https://testco.de", page_title="TestCo",
+        meta_description="", raw_homepage_excerpt="TestCo makes parts",
+        normalized_domain="testco.de", industry_hint="Automotive",
+    )
+    assignments = build_initial_assignments(brief)
+    # Every assignment should carry contract fields
+    for a in assignments:
+        assert a.output_schema_key, f"{a.task_key} missing output_schema_key"
+        assert a.industry_hint == "Automotive"
+    # Contact tasks should have run_condition set
+    contact_tasks = [a for a in assignments if a.task_key in ("contact_discovery", "contact_qualification")]
+    for ct in contact_tasks:
+        assert ct.run_condition is not None
+        assert ct.depends_on  # should have upstream deps
+
+
+def test_assignment_defaults_for_manual_construction():
+    """Manually constructed Assignments (tests, follow-up) should not break."""
+    from src.orchestration.task_router import Assignment
+    a = Assignment(
+        task_key="test", assignee="X", target_section="s",
+        label="L", objective="O", model_name="m", allowed_tools=("search",),
+    )
+    assert a.depends_on == ()
+    assert a.run_condition is None
+    assert a.input_artifacts == ()
+    assert a.output_schema_key == ""
+    assert a.industry_hint == "n/v"
+
+
+# ---------------------------------------------------------------------------
+# 8. Generic run_condition evaluation
+# ---------------------------------------------------------------------------
+
+def test_evaluate_run_conditions_skips_when_no_buyer():
+    from src.orchestration.task_router import Assignment, evaluate_run_conditions
+    assignments = [
+        Assignment(
+            task_key="contact_discovery", assignee="ContactDepartment",
+            target_section="contact_intelligence", label="Contact discovery",
+            objective="Find contacts", model_name="m", allowed_tools=("search",),
+            run_condition="buyer_department_has_prioritized_firms",
+        ),
+    ]
+    state = {"department_packages": {"BuyerDepartment": {"accepted_points": []}}, "task_statuses": {}}
+    runnable, skipped = evaluate_run_conditions(assignments, pipeline_state=state)
+    assert len(runnable) == 0
+    assert len(skipped) == 1
+    assert skipped[0]["status"] == "skipped"
+
+
+def test_evaluate_run_conditions_runs_when_buyer_has_points():
+    from src.orchestration.task_router import Assignment, evaluate_run_conditions
+    assignments = [
+        Assignment(
+            task_key="contact_discovery", assignee="ContactDepartment",
+            target_section="contact_intelligence", label="Contact discovery",
+            objective="Find contacts", model_name="m", allowed_tools=("search",),
+            run_condition="buyer_department_has_prioritized_firms",
+        ),
+    ]
+    state = {"department_packages": {"BuyerDepartment": {"accepted_points": ["peer_competitors.assessment"]}}, "task_statuses": {}}
+    runnable, skipped = evaluate_run_conditions(assignments, pipeline_state=state)
+    assert len(runnable) == 1
+    assert len(skipped) == 0
+
+
+def test_evaluate_run_conditions_no_condition_always_runs():
+    from src.orchestration.task_router import Assignment, evaluate_run_conditions
+    assignments = [
+        Assignment(
+            task_key="company_fundamentals", assignee="CompanyDepartment",
+            target_section="company_profile", label="Fundamentals",
+            objective="Build fundamentals", model_name="m", allowed_tools=("search",),
+        ),
+    ]
+    state = {"department_packages": {}, "task_statuses": {}}
+    runnable, skipped = evaluate_run_conditions(assignments, pipeline_state=state)
+    assert len(runnable) == 1
+    assert len(skipped) == 0
+
+
+def test_evaluate_contact_qualification_condition():
+    from src.orchestration.task_router import Assignment, evaluate_run_conditions
+    assignments = [
+        Assignment(
+            task_key="contact_qualification", assignee="ContactDepartment",
+            target_section="contact_intelligence", label="Qualification",
+            objective="Qualify contacts", model_name="m", allowed_tools=("search",),
+            run_condition="contact_discovery_completed",
+        ),
+    ]
+    # Not completed yet
+    state = {"department_packages": {}, "task_statuses": {"contact_discovery": "rejected"}}
+    runnable, skipped = evaluate_run_conditions(assignments, pipeline_state=state)
+    assert len(skipped) == 1
+    # Now completed
+    state["task_statuses"]["contact_discovery"] = "accepted"
+    runnable, skipped = evaluate_run_conditions(assignments, pipeline_state=state)
+    assert len(runnable) == 1

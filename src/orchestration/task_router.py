@@ -1,7 +1,14 @@
-"""Translate the supervisor mandate into department assignments."""
+"""Translate the supervisor mandate into department assignments.
+
+The Assignment dataclass carries the full task contract from use_cases.py
+into the runtime layer.  ``evaluate_run_conditions()`` generically decides
+which tasks are runnable vs skipped based on ``run_condition`` and the
+current pipeline state — no department-specific logic required.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from src.app.use_cases import build_standard_backlog
 from src.config import get_role_model_selection
@@ -26,6 +33,12 @@ class Assignment:
     objective: str
     model_name: str
     allowed_tools: tuple[str, ...]
+    # Contract fields from use_cases.py — carried through to runtime
+    depends_on: tuple[str, ...] = ()
+    run_condition: str | None = None
+    input_artifacts: tuple[str, ...] = ()
+    output_schema_key: str = ""
+    industry_hint: str = "n/v"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +53,8 @@ def _assignment_role_name(assignee: str) -> str:
 
 
 def build_initial_assignments(brief: SupervisorBrief) -> list[Assignment]:
+    """Build assignments carrying the full task contract from use_cases.py."""
+    industry = brief.industry_hint if brief.industry_hint != "n/v" else brief.company_name
     assignments: list[Assignment] = []
     for item in build_standard_backlog():
         assignee = str(item["assignee"])
@@ -54,13 +69,79 @@ def build_initial_assignments(brief: SupervisorBrief) -> list[Assignment]:
                 label=str(item["label"]),
                 objective=str(item["objective_template"]).format(
                     company_name=brief.company_name,
-                    industry_hint=brief.industry_hint if brief.industry_hint != "n/v" else brief.company_name,
+                    industry_hint=industry,
                 ),
                 model_name=structured_model if "llm_structured" in allowed_tools else chat_model,
                 allowed_tools=allowed_tools,
+                depends_on=tuple(item.get("depends_on") or []),
+                run_condition=item.get("run_condition"),
+                input_artifacts=tuple(item.get("input_artifacts") or []),
+                output_schema_key=str(item.get("output_schema_key", "")),
+                industry_hint=brief.industry_hint,
             )
         )
     return assignments
+
+
+# ---------------------------------------------------------------------------
+# Generic run_condition evaluation
+# ---------------------------------------------------------------------------
+
+# Maps run_condition strings to callables that receive the pipeline state
+# and return True when the condition is met.
+_CONDITION_EVALUATORS: dict[str, Any] = {
+    "buyer_department_has_prioritized_firms": lambda state: bool(
+        state.get("department_packages", {}).get("BuyerDepartment", {}).get("accepted_points")
+    ),
+    "contact_discovery_completed": lambda state: (
+        state.get("task_statuses", {}).get("contact_discovery") in ("accepted", "degraded")
+    ),
+}
+
+
+def evaluate_run_conditions(
+    assignments: list[Assignment],
+    *,
+    pipeline_state: dict[str, Any],
+) -> tuple[list[Assignment], list[dict[str, str]]]:
+    """Split assignments into runnable and skipped based on run_condition.
+
+    Parameters
+    ----------
+    assignments:
+        All assignments for a single department.
+    pipeline_state:
+        Dict with at least ``department_packages`` and ``task_statuses``
+        reflecting the current pipeline progress.
+
+    Returns
+    -------
+    (runnable, skipped)
+        *runnable* — assignments whose run_condition is met (or None).
+        *skipped* — dicts with ``task_key``, ``label``, ``target_section``,
+        ``status: "skipped"`` for tasks whose condition is not met.
+    """
+    runnable: list[Assignment] = []
+    skipped: list[dict[str, str]] = []
+    for a in assignments:
+        if a.run_condition is None:
+            runnable.append(a)
+            continue
+        evaluator = _CONDITION_EVALUATORS.get(a.run_condition)
+        if evaluator is None:
+            # Unknown condition — run the task (fail-open)
+            runnable.append(a)
+            continue
+        if evaluator(pipeline_state):
+            runnable.append(a)
+        else:
+            skipped.append({
+                "task_key": a.task_key,
+                "label": a.label,
+                "target_section": a.target_section,
+                "status": "skipped",
+            })
+    return runnable, skipped
 
 
 def build_department_assignments(brief: SupervisorBrief) -> list[DepartmentAssignment]:

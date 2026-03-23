@@ -7,23 +7,62 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 ## P0 — Architectural Risks (fix before scaling)
 
 ### Synthesis Consolidation
-- [ ] Decide: AG2 SynthesisDepartment as primary, `build_synthesis_from_memory()` as deterministic fallback, or remove one
+> **Decision B resolved**: AG2 SynthesisDepartment is the single authoritative
+> synthesis path. The rule-based path becomes pre-processing input, not a
+> parallel author. No merge in `pipeline_runner.py`.
+
+- [ ] Rename `build_synthesis_from_memory()` → `build_synthesis_context()` — output becomes structured input for the AG2 synthesis chat, not a standalone synthesis
+- [ ] Extend `SynthesisDepartmentAgent` to receive the context payload and produce a complete `Synthesis`-schema-compliant output
+- [ ] Update `finalize_synthesis()` tool contract to require all fields of the `Synthesis` Pydantic model
 - [ ] Remove the manual merge in `pipeline_runner.py` (lines 96–103) that patches AG2 output into rule-based output
+- [ ] Add degraded fallback: if AG2 synthesis hits `max_round`, use `build_synthesis_context()` output directly with `confidence: "degraded"` marker
 - [ ] Ensure a single, traceable synthesis path from department packages → final synthesis payload
 
 ### Non-Deterministic GroupChat Control
-- [ ] Evaluate replacing `speaker_selection_method="auto"` with a custom selector that enforces the Lead→Researcher→Critic→(Revision)→Lead workflow
-- [ ] Add workflow-step tracking inside `run_state` so the Lead can detect when the chat deviates from the expected sequence
+> **Decision C resolved**: Custom Speaker Selector as deterministic workflow
+> controller. State-machine per GroupChat type. `auto` only as unreachable
+> fallback. No framework change needed — AG2 supports `speaker_selection_method=callable`.
+
+- [ ] Implement Department GroupChat state-machine: `RESEARCH → REVIEW → DECIDE → (RETRY|NEXT|FINALIZE)` — custom callable returns next speaker based on `run_state`
+- [ ] Implement Synthesis GroupChat state-machine: `READ → CRITIQUE → DECIDE → (BACK_REQUEST|FINALIZE)`
+- [ ] Add workflow-step tracking inside `run_state` so the selector always knows the current phase
+- [ ] Replace `speaker_selection_method="auto"` with the custom callable in both `lead.py` and `synthesis_department.py`
 - [ ] Define a max-retry cap per task (currently implicit via `attempt < 2` in Supervisor) — make it explicit and configurable
 
 ### Task Contract Hardening (`use_cases.py`)
-- [ ] Decide: does `use_cases.py` remain a business-definition file, or become the canonical task-contract source for orchestration?
-- [ ] Add `depends_on` field per task to make implicit ordering explicit (e.g., `contact_discovery` depends on `peer_companies` + `monetization_redeployment`)
-- [ ] Add `run_condition` for conditional tasks — `contact_discovery` and `contact_qualification` may only be meaningful after Buyer produces prioritized firms
-- [ ] Add `output_schema_key` per task pointing to the Pydantic model that validates the task output
-- [ ] Add `validation_rules` per task (minimum evidence thresholds, required fields) so Critic rules derive from the contract, not from a parallel hardcoded dict
-- [ ] Distinguish mandatory vs conditional tasks in `STANDARD_TASK_BACKLOG`
+> **Decision A resolved**: `use_cases.py` becomes the canonical task-contract
+> source. `LIQUISTO_STANDARD_SCOPE` remains business/prompt policy.
+> `STANDARD_TASK_BACKLOG` becomes the orchestration specification.
+>
+> **Decision D resolved**: Contact tasks are conditional. `contact_discovery`
+> runs only when Buyer produces prioritized firms. `contact_qualification`
+> runs only when `contact_discovery` finds contacts.
+
+Final task-contract shape:
+```python
+{
+    "task_key": str,
+    "label": str,
+    "assignee": str,
+    "target_section": str,           # reporting/assembly target
+    "objective_template": str,
+    "depends_on": list[str],         # control-flow deps (task_keys)
+    "run_condition": str | None,     # None = mandatory
+    "input_artifacts": list[str],    # upstream typed artifacts to consume
+    "output_schema_key": str,        # Pydantic model name from schemas.py
+    "validation_rules": list[dict],  # structured rules with class: core|supporting
+}
+```
+
+- [ ] Migrate all 12 tasks in `STANDARD_TASK_BACKLOG` to the new contract shape
+- [ ] Add `depends_on` per task (e.g., `contact_discovery` depends on `peer_companies` + `monetization_redeployment`)
+- [ ] Add `run_condition` for conditional tasks: `contact_discovery` → `"buyer_department_has_prioritized_firms"`, `contact_qualification` → `"contact_discovery_completed"`
+- [ ] Add `input_artifacts` per task to make data-flow explicit (e.g., `contact_discovery` consumes `["MarketNetwork"]`)
+- [ ] Add `output_schema_key` per task pointing to a task-specific Pydantic sub-schema (requires schema refactor — see P2)
+- [ ] Add `validation_rules` per task with `class: "core" | "supporting"` per rule
 - [ ] Make `industry_hint` an explicit input-contract field per Assignment, not an implicitly inferred value passed loosely through `run_state`
+- [ ] Update `task_router.py` to evaluate `depends_on` and `run_condition` before building assignments
+- [ ] Remove `TASK_POINT_RULES` from `critic.py` — Critic reads rules from the contract
 
 ### Contact Department Tool Policy Gap
 - [ ] Add `ContactResearcher`, `ContactCritic`, `ContactJudge`, `ContactCodingSpecialist` to `BASE_TOOL_POLICY` in `tool_policy.py`
@@ -34,16 +73,34 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 
 ## P1 — Quality & Correctness (directly affects output quality)
 
-### Critic Blind Spots
-- [ ] Add `TASK_POINT_RULES` for `contact_discovery` (e.g., at least one contact with `name != "n/v"`, at least one `firma != "n/v"`)
-- [ ] Add `TASK_POINT_RULES` for `contact_qualification` (e.g., at least one contact with `senioritaet != "n/v"`, `suggested_outreach_angle != "n/v"`)
-- [ ] Evaluate adding a lightweight LLM-based quality score alongside the rule-based check (hybrid critic)
-- [ ] Consider checking payload values beyond `!= "n/v"` — e.g., minimum string length, no placeholder patterns
+### Critic → Generic Rule Evaluator
+> **Decision E resolved**: Critic stays deterministic. No LLM. Rules come
+> from the task contract, not from a parallel `TASK_POINT_RULES` dict.
 
-### Judge Is a No-Op
-- [ ] Decide: should the Judge use LLM reasoning, or remain a deterministic "accept conservative" gate?
-- [ ] If deterministic: at minimum, differentiate between "partial evidence exists" and "no evidence at all"
-- [ ] If LLM-based: define the input contract (critic issues + payload snapshot) and output schema
+- [ ] Refactor `CriticAgent.review()` to accept `validation_rules` from the task contract instead of looking up `TASK_POINT_RULES`
+- [ ] Implement generic check evaluators: `non_placeholder`, `min_items`, `min_length` (extensible)
+- [ ] Each rule carries `class: "core" | "supporting"` — Critic reports pass/fail per class
+- [ ] Remove `TASK_POINT_RULES` dict from `critic.py` after migration
+- [ ] Contact task rules are now defined in the contract — no separate addition needed
+
+### Judge → Three-Level Deterministic Gate
+> **Decision E resolved**: Judge stays deterministic. No LLM until contracts
+> are stable. Three outcomes based on rule-class pass rates.
+
+Judge heuristic:
+- **Accept**: all `core` rules passed + at least one `supporting` rule passed
+- **Accept degraded**: at least one `core` rule passed, but not all → `confidence: "low"`, must generate `open_questions` from failed rules
+- **Reject**: no `core` rule passed → task marked `skipped`, not `conservative`
+
+`accept_degraded` downstream semantics:
+- Output flows into synthesis with `confidence: "low"`
+- Failed rules become `open_questions` in the department package
+- Downstream tasks may consume the artifact but synthesis must flag the weakness
+
+- [ ] Implement three-outcome `JudgeAgent.decide()` reading `validation_rules` with `class` from the task contract
+- [ ] Replace current no-op logic (`accept_conservative_output: True` always) with class-aware heuristic
+- [ ] Add `skipped` as valid task status alongside `accepted` and `conservative`
+- [ ] Ensure `accept_degraded` packages carry `open_questions` derived from failed rules
 
 ### Industry Inference Is Too Narrow
 - [ ] `infer_industry()` covers only 4 keyword groups — most companies will return `"n/v"`
@@ -59,21 +116,39 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 
 ---
 
-## P2 — Architecture Decisions: Domain Models & Agent Stubs
+## P2 — Schema Refactor & Domain Model Decisions
 
-> **Do not treat this as cleanup.** These are architecture decisions that depend on
-> the P0 contract-hardening work. If `use_cases.py` becomes the canonical contract
-> source with typed `output_schema_key` per task, some of these "dead" models may
-> become the correct canonical runtime artefacts. Decide P0 first, then revisit.
+> Now that Decision A is resolved (`use_cases.py` is the canonical contract
+> source with `output_schema_key` per task), this section has two jobs:
+> (1) create task-specific sub-schemas so `output_schema_key` is a real type
+> contract, and (2) decide whether existing unused domain models become those
+> sub-schemas or get removed.
 
-### Unused Domain Models — Keep or Promote?
-- [ ] `src/domain/briefing.py` — `Briefing` class not imported anywhere
-- [ ] `src/domain/findings.py` — `Finding` class not imported anywhere
-- [ ] `src/domain/evidence.py` — `EvidenceRecord` class not imported anywhere
-- [ ] `src/domain/decisions.py` — `OpportunityAssessment` class not imported anywhere
-- [ ] `src/domain/buyers.py` — `BuyerPath` class not imported anywhere
-- [ ] `src/domain/market.py` — `MarketSignal` class not imported anywhere
-- [ ] **Decision required**: remove all six, or promote them to typed runtime artefacts referenced by task contracts. Do not delete before the contract model is settled.
+### Task-Specific Sub-Schemas
+Current schemas are monolithic per section (e.g., `CompanyProfile` serves 3
+tasks). `output_schema_key` needs a dedicated model per task.
+
+- [ ] Extract `CompanyFundamentals` sub-schema from `CompanyProfile` (identity, offering, footprint, business model)
+- [ ] `EconomicSituation` already exists as sub-model — verify it covers the `economic_commercial_situation` task contract
+- [ ] Extract `ProductAssetScope` sub-schema from `CompanyProfile` (product classification, asset inventory)
+- [ ] Verify `IndustryAnalysis` covers `market_situation` or extract a focused sub-schema
+- [ ] Extract `RepurposingCircularity` and `AnalyticsSignals` sub-schemas from `IndustryAnalysis`
+- [ ] Verify `MarketNetwork` covers `peer_companies` and `monetization_redeployment` or split
+- [ ] Create `ContactDiscoveryResult` sub-schema from `ContactIntelligenceSection`
+- [ ] Create `ContactQualificationResult` sub-schema from `ContactIntelligenceSection`
+- [ ] Define assembly convention: how sub-schemas merge into section-level models for `PipelineData`
+
+### Unused Domain Models — Keep, Promote, or Remove?
+> Evaluate each against the new sub-schema needs. Some may map directly to
+> task-level output types; others are genuinely dead.
+
+- [ ] `src/domain/briefing.py` — `Briefing`: does it map to any task output? If not, remove
+- [ ] `src/domain/findings.py` — `Finding`: potential base for `validation_rules` result type?
+- [ ] `src/domain/evidence.py` — `EvidenceRecord`: potential source-tracking model for sub-schemas?
+- [ ] `src/domain/decisions.py` — `OpportunityAssessment`: overlaps with `Synthesis` — likely remove
+- [ ] `src/domain/buyers.py` — `BuyerPath`: candidate for `monetization_redeployment` output type?
+- [ ] `src/domain/market.py` — `MarketSignal`: candidate for `market_situation` output type?
+- [ ] Final decision per model after sub-schema design is complete
 
 ### Unused Agent Stubs — Assign Responsibility or Remove?
 - [ ] `src/agents/strategic_analyst.py` — `CrossDomainStrategicAnalystAgent` has only `__init__`, never called at runtime
@@ -151,33 +226,34 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 
 ---
 
-## Open Design Decisions
+## Resolved Design Decisions
 
-These must be resolved before or during P0/P1 execution. They are not tasks
-themselves but governance choices that determine how the tasks above are
-implemented.
+All five governance decisions have been resolved. They are documented here
+for traceability and referenced inline in the P0/P1/P2 blocks above.
 
-**A. Is `use_cases.py` business policy or canonical contract source?**
-Solange das offen ist, repariert man Runtime-Logik downstream, ohne den Typ
-des Systems upstream festzuziehen. `STANDARD_TASK_BACKLOG` ist derzeit eher
-ein Backlog als eine Orchestrierungsspezifikation.
+**A. `use_cases.py` is the canonical contract source.** ✅
+`LIQUISTO_STANDARD_SCOPE` remains business/prompt policy.
+`STANDARD_TASK_BACKLOG` becomes the orchestration specification with
+`depends_on`, `run_condition`, `input_artifacts`, `output_schema_key`,
+and `validation_rules` (with `class: core|supporting`).
 
-**B. What is the single authoritative synthesis path?**
-The To-do names the right question (Synthesis Consolidation). But this must be
-treated as a governance decision, not a technical cleanup. A final synthesis
-payload needs exactly one traceable authority path.
+**B. AG2 SynthesisDepartment is the single authoritative synthesis path.** ✅
+`build_synthesis_from_memory()` becomes `build_synthesis_context()` —
+pre-processing input for the AG2 chat, not a parallel author.
+No merge in `pipeline_runner.py`. Degraded fallback on AG2 timeout.
 
-**C. How strict should AG2 determinism be?**
-Custom speaker selector is a good start. But the real question is: do we want
-a true workflow controller, or just a slightly more controlled chat? If
-workflow, then `auto` plus run-state hints will not be enough long-term.
+**C. Custom Speaker Selector as deterministic workflow controller.** ✅
+State-machine per GroupChat type. Department: `RESEARCH → REVIEW →
+DECIDE → (RETRY|NEXT|FINALIZE)`. Synthesis: `READ → CRITIQUE → DECIDE →
+(BACK_REQUEST|FINALIZE)`. `auto` only as unreachable safety fallback.
 
-**D. Are Contact tasks mandatory or conditional?**
-In the current backlog they appear canonical, but functionally they are
-downstream of Buyer results. This distinction must be modelled in
-`use_cases.py` via `run_condition`.
+**D. Contact tasks are conditional.** ✅
+`contact_discovery`: `run_condition: "buyer_department_has_prioritized_firms"`.
+`contact_qualification`: `run_condition: "contact_discovery_completed"`.
+Modelled via `run_condition` in the task contract.
 
-**E. Should Judge and Critic be deterministic or hybrid?**
-Avoid putting LLM intelligence into the Judge before input contracts and
-task validation are properly typed. Otherwise uncertainty just shifts to a
-later layer.
+**E. Critic and Judge stay deterministic. No LLM before stable contracts.** ✅
+Critic becomes generic rule evaluator reading `validation_rules` from
+the task contract. Judge uses three-level heuristic (accept / accept
+degraded / reject) based on `core` vs `supporting` rule-class pass rates.
+`TASK_POINT_RULES` in `critic.py` will be removed after migration.

@@ -25,6 +25,7 @@ from typing import Annotated, Any, Callable, Literal
 from autogen import ConversableAgent, GroupChat, GroupChatManager, register_function
 
 from src.agents.coding_assistant import CodingAssistantAgent
+from src.orchestration.speaker_selector import build_department_selector
 from src.agents.critic import CriticAgent
 from src.agents.judge import JudgeAgent
 from src.agents.worker import ResearchWorker
@@ -223,7 +224,7 @@ class DepartmentLeadAgent:
                 self.coding_name,
             ],
             "max_round": 8,
-            "speaker_selection_method": "auto",
+            "speaker_selection_method": "state_machine",
         }
 
     def run(
@@ -251,6 +252,8 @@ class DepartmentLeadAgent:
             "last_reviews": {},      # task_key → review dict (set by review_research)
             "attempts": {},          # task_key → int
             "task_results": {},      # task_key → worker report
+            "workflow_step": "start",  # state-machine phase
+            "tool_errors": [],       # structured error log
         }
 
         investigation_plan = self.build_investigation_plan(brief, assignments)
@@ -296,20 +299,26 @@ class DepartmentLeadAgent:
             assignment = next((a for a in assignments if a.task_key == task_key), None)
             if not assignment:
                 return json.dumps({"error": f"Unknown task_key: {task_key}"})
-            report = self.worker.run(
-                brief=brief,
-                task_key=task_key,
-                target_section=assignment.target_section,
-                objective=assignment.objective,
-                current_sections={assignment.target_section: run_state["current_payload"]},
-                query_overrides=run_state["query_overrides"].get(task_key),
-                allowed_tools=list(assignment.allowed_tools),
-                model_name=assignment.model_name,
-                revision_request=run_state["revision_requests"].get(task_key),
-                role_memory=(role_memory or {}).get(self.researcher_name, []),
-            )
+            try:
+                report = self.worker.run(
+                    brief=brief,
+                    task_key=task_key,
+                    target_section=assignment.target_section,
+                    objective=assignment.objective,
+                    current_sections={assignment.target_section: run_state["current_payload"]},
+                    query_overrides=run_state["query_overrides"].get(task_key),
+                    allowed_tools=list(assignment.allowed_tools),
+                    model_name=assignment.model_name,
+                    revision_request=run_state["revision_requests"].get(task_key),
+                    role_memory=(role_memory or {}).get(self.researcher_name, []),
+                )
+            except Exception as exc:
+                err = {"tool": "run_research", "task_key": task_key, "error": str(exc)}
+                run_state["tool_errors"].append(err)
+                return json.dumps({"error": f"run_research failed: {exc}", "task_key": task_key})
             run_state["current_payload"] = dict(report["payload"])
             run_state["task_results"][task_key] = report
+            run_state["workflow_step"] = "review"  # advance state-machine
             if memory_store is not None:
                 memory_store.ingest_worker_report(report, department=self.department)
             return json.dumps(
@@ -333,15 +342,21 @@ class DepartmentLeadAgent:
             report = run_state["task_results"].get(task_key)
             if not report:
                 return json.dumps({"error": f"No research result yet for: {task_key}"})
-            review = self.critic.review(
-                task_key=task_key,
-                section=assignment.target_section,
-                objective=assignment.objective,
-                payload=report["payload"],
-                report=report,
-                role_memory=(role_memory or {}).get(self.critic_name, []),
-            )
+            try:
+                review = self.critic.review(
+                    task_key=task_key,
+                    section=assignment.target_section,
+                    objective=assignment.objective,
+                    payload=report["payload"],
+                    report=report,
+                    role_memory=(role_memory or {}).get(self.critic_name, []),
+                )
+            except Exception as exc:
+                err = {"tool": "review_research", "task_key": task_key, "error": str(exc)}
+                run_state["tool_errors"].append(err)
+                return json.dumps({"error": f"review_research failed: {exc}", "task_key": task_key})
             run_state["last_reviews"][task_key] = review
+            run_state["workflow_step"] = "decide"  # advance state-machine
             if memory_store is not None:
                 memory_store.mark_critic_review(
                     task_key,
@@ -370,9 +385,14 @@ class DepartmentLeadAgent:
             review = run_state["last_reviews"].get(task_key, {})
             attempt = run_state["attempts"].get(task_key, 0)
             run_state["attempts"][task_key] = attempt + 1
-            decision = supervisor.decide_revision(
-                task_key=task_key, review=review, attempt=attempt
-            )
+            try:
+                decision = supervisor.decide_revision(
+                    task_key=task_key, review=review, attempt=attempt
+                )
+            except Exception as exc:
+                err = {"tool": "request_supervisor_revision", "task_key": task_key, "error": str(exc)}
+                run_state["tool_errors"].append(err)
+                decision = {"retry": False, "reason": f"Supervisor revision failed: {exc}"}
             if decision.get("retry"):
                 run_state["revision_requests"][task_key] = {
                     "accepted_points": review.get("accepted_points", []),
@@ -381,6 +401,9 @@ class DepartmentLeadAgent:
                     "feedback_to_worker": review.get("feedback_to_worker", []),
                     "revision_instructions": review.get("revision_instructions", []),
                 }
+                run_state["workflow_step"] = "research"  # back to research
+            else:
+                run_state["workflow_step"] = "decide"  # Lead decides next
             return json.dumps(decision, ensure_ascii=False)
 
         def suggest_refined_queries(
@@ -391,14 +414,20 @@ class DepartmentLeadAgent:
             if not assignment:
                 return json.dumps({"error": f"Unknown task_key: {task_key}"})
             review = run_state["last_reviews"].get(task_key, {})
-            support = self.coding_assistant.suggest_queries(
-                section=assignment.target_section,
-                brief=brief,
-                issues=review.get("issues", []),
-                review=review,
-                coding_brief=review.get("coding_brief"),
-            )
+            try:
+                support = self.coding_assistant.suggest_queries(
+                    section=assignment.target_section,
+                    brief=brief,
+                    issues=review.get("issues", []),
+                    review=review,
+                    coding_brief=review.get("coding_brief"),
+                )
+            except Exception as exc:
+                err = {"tool": "suggest_refined_queries", "task_key": task_key, "error": str(exc)}
+                run_state["tool_errors"].append(err)
+                return json.dumps({"error": f"suggest_refined_queries failed: {exc}", "task_key": task_key})
             run_state["query_overrides"][task_key] = support["query_overrides"]
+            run_state["workflow_step"] = "research"  # after coding → research
             return json.dumps(
                 {
                     "task_key": task_key,
@@ -413,11 +442,17 @@ class DepartmentLeadAgent:
         ) -> str:
             """Make a final edge-case decision when retries are exhausted."""
             review = run_state["last_reviews"].get(task_key, {})
-            result = self.judge.decide(
-                section=task_key,
-                critic_review=review if review else None,
-                critic_issues=review.get("issues", []) if review else [],
-            )
+            try:
+                result = self.judge.decide(
+                    section=task_key,
+                    critic_review=review if review else None,
+                    critic_issues=review.get("issues", []) if review else [],
+                )
+            except Exception as exc:
+                err = {"tool": "judge_decision", "task_key": task_key, "error": str(exc)}
+                run_state["tool_errors"].append(err)
+                result = {"task_status": "degraded", "reason": f"Judge failed: {exc}", "open_questions": [str(exc)]}
+            run_state["workflow_step"] = "decide"  # back to Lead
             return json.dumps(result, ensure_ascii=False)
 
         def finalize_package(
@@ -432,7 +467,9 @@ class DepartmentLeadAgent:
             for assignment in assignments:
                 report = run_state["task_results"].get(assignment.task_key)
                 if report:
-                    final_review = self.critic.review(
+                    # Reuse cached review from the chat cycle instead of re-running
+                    cached_review = run_state["last_reviews"].get(assignment.task_key)
+                    final_review = cached_review if cached_review else self.critic.review(
                         task_key=assignment.task_key,
                         section=assignment.target_section,
                         objective=assignment.objective,
@@ -513,6 +550,12 @@ class DepartmentLeadAgent:
                 }
             ).model_dump(mode="json")
 
+            # Log tool errors as open_questions for traceability
+            for err in run_state.get("tool_errors", []):
+                package["open_questions"] = list(dict.fromkeys(
+                    package.get("open_questions", []) + [f"Tool error ({err['tool']}): {err['error']}"]
+                ))
+
             self._completed_package = package
             if memory_store is not None:
                 memory_store.store_department_package(self.department, package)
@@ -582,11 +625,27 @@ class DepartmentLeadAgent:
         )
 
         # ── GroupChat and Manager ──────────────────────────────────────────
+        agent_map = {
+            self.name: lead_ca,
+            self.researcher_name: researcher_ca,
+            self.critic_name: critic_ca,
+            self.judge_name: judge_ca,
+            self.coding_name: coding_ca,
+        }
+        speaker_selector = build_department_selector(
+            run_state=run_state,
+            agent_map=agent_map,
+            lead_name=self.name,
+            researcher_name=self.researcher_name,
+            critic_name=self.critic_name,
+            judge_name=self.judge_name,
+            coding_name=self.coding_name,
+        )
         groupchat = GroupChat(
             agents=[lead_ca, researcher_ca, critic_ca, judge_ca, coding_ca],
             messages=[],
             max_round=len(assignments) * 15,
-            speaker_selection_method="auto",
+            speaker_selection_method=speaker_selector,
         )
         manager = GroupChatManager(
             groupchat=groupchat,

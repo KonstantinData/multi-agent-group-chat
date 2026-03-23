@@ -25,6 +25,7 @@ class SynthesisRuntime:
         departments: dict[str, Any],
         memory_store=None,
         on_message: MessageHook = None,
+        synthesis_context: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         return self.agent.run(
             brief=brief,
@@ -33,4 +34,5 @@ class SynthesisRuntime:
             departments=departments,
             memory_store=memory_store,
             on_message=on_message,
+            synthesis_context=synthesis_context,
         )

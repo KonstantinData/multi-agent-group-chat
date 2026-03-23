@@ -13,8 +13,8 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 > parallel author. No merge in `pipeline_runner.py`.
 
 - [X] Rename `build_synthesis_from_memory()` → `build_synthesis_context()` — output becomes structured input for the AG2 synthesis chat, not a standalone synthesis
-- [ ] Extend `SynthesisDepartmentAgent` to receive the context payload and produce a complete `Synthesis`-schema-compliant output
-- [ ] Update `finalize_synthesis()` tool contract to require all fields of the `Synthesis` Pydantic model
+- [X] Extend `SynthesisDepartmentAgent` to receive the context payload and produce a complete `Synthesis`-schema-compliant output
+- [X] Update `finalize_synthesis()` tool contract to require all fields of the `Synthesis` Pydantic model
 - [X] Remove the manual merge in `pipeline_runner.py` (lines 96–103) that patches AG2 output into rule-based output
 - [X] Add fallback path: if AG2 synthesis hits `max_round`, use `build_synthesis_context()` output directly with `generation_mode: "fallback"` — confidence is derived from input package strength, not hardcoded
 - [X] Ensure a single, traceable synthesis path from department packages → final synthesis payload
@@ -25,11 +25,11 @@ Status legend: `[ ]` open · `[~]` in progress · `[x]` done
 > controller. State-machine per GroupChat type. `auto` only as unreachable
 > fallback. No framework change needed — AG2 supports `speaker_selection_method=callable`.
 
-- [ ] Implement Department GroupChat state-machine: `RESEARCH → REVIEW → DECIDE → (RETRY|NEXT|FINALIZE)` — custom callable returns next speaker based on `run_state`
-- [ ] Implement Synthesis GroupChat state-machine: `READ → CRITIQUE → DECIDE → (BACK_REQUEST|FINALIZE)`
-- [ ] Add workflow-step tracking inside `run_state` so the selector always knows the current phase
-- [ ] Replace `speaker_selection_method="auto"` with the custom callable in both `lead.py` and `synthesis_department.py`
-- [ ] Define a max-retry cap per task (currently implicit via `attempt < 2` in Supervisor) — make it explicit and configurable
+- [X] Implement Department GroupChat state-machine: `RESEARCH → REVIEW → DECIDE → (RETRY|NEXT|FINALIZE)` — custom callable returns next speaker based on `run_state`
+- [X] Implement Synthesis GroupChat state-machine: `READ → CRITIQUE → DECIDE → (BACK_REQUEST|FINALIZE)`
+- [X] Add workflow-step tracking inside `run_state` so the selector always knows the current phase
+- [X] Replace `speaker_selection_method="auto"` with the custom callable in both `lead.py` and `synthesis_department.py`
+- [X] Define a max-retry cap per task (currently implicit via `attempt < 2` in Supervisor) — make it explicit and configurable
 
 ### Task Contract Hardening (`use_cases.py`)
 
@@ -161,10 +161,10 @@ Judge decision → task status mapping:
 
 ### Supervisor Routing Is Fragile
 
-- [ ] `route_question()` uses flat keyword matching with no scoring or ranking
-- [ ] Option A: add a priority/weight system so overlapping keywords resolve deterministically
-- [ ] Option B: replace with a single LLM classification call (low cost, high accuracy)
-- [ ] Add a fallback route when no keywords match (currently defaults to CompanyDepartment — is that always correct?)
+- [X] `route_question()` uses flat keyword matching with no scoring or ranking
+- [X] Option A: add a priority/weight system so overlapping keywords resolve deterministically
+- [ ] Option B: replace with a single LLM classification call (low cost, high accuracy) — deferred: Option A (weighted scoring) is sufficient for current scale
+- [X] Add a fallback route when no keywords match (currently defaults to CompanyDepartment — is that always correct?)
 
 ---
 
@@ -234,19 +234,19 @@ string names and actual Pydantic classes, a central registry must resolve them.
 
 ### AG2 GroupChat Error Propagation
 
-- [ ] Wrap tool closures in `lead.py` with try/except so a single tool failure doesn't crash the entire department run
-- [ ] Return a structured error JSON from failed tool calls instead of letting exceptions propagate through GroupChatManager
-- [ ] Log tool-call failures to `run_state` so they appear in the department package's `open_questions`
+- [X] Wrap tool closures in `lead.py` with try/except so a single tool failure doesn't crash the entire department run
+- [X] Return a structured error JSON from failed tool calls instead of letting exceptions propagate through GroupChatManager
+- [X] Log tool-call failures to `run_state` so they appear in the department package's `open_questions`
 
 ### LLM Fallback Consistency
 
-- [ ] `worker.py` has LLM fallback logic, but `synthesis_department.py` has none — if the AG2 synthesis chat fails, the fallback in `pipeline_runner.py` is a generic dict
-- [ ] Standardize: every AG2 group should produce a valid typed output even on total failure
+- [X] `worker.py` has LLM fallback logic, but `synthesis_department.py` has none — if the AG2 synthesis chat fails, the fallback in `pipeline_runner.py` is a generic dict
+- [X] Standardize: every AG2 group should produce a valid typed output even on total failure
 
 ### File I/O Safety
 
-- [ ] `long_term_store.py` does read-modify-write without locking — concurrent runs could corrupt the JSON file
-- [ ] Option A: add file locking (e.g., `filelock` package)
+- [X] `long_term_store.py` does read-modify-write without locking — concurrent runs could corrupt the JSON file
+- [X] Option A: add file locking (e.g., `filelock` package)
 - [ ] Option B: switch to SQLite for long-term memory
 
 ---
@@ -263,16 +263,16 @@ string names and actual Pydantic classes, a central registry must resolve them.
 
 ### Routing & Follow-up
 
-- [ ] Add unit test for `SupervisorAgent.route_question()` — verify routing for each department keyword set
-- [ ] Add unit test for `follow_up.py::answer_follow_up()` — verify routing and answer assembly per department
+- [X] Add unit test for `SupervisorAgent.route_question()` — verify routing for each department keyword set
+- [X] Add unit test for `follow_up.py::answer_follow_up()` — verify routing and answer assembly per department
 
 ### Integration
 
-- [ ] Add integration test for a single department AG2 GroupChat run (monkeypatched LLM, real AG2 flow)
-- [ ] Add test for Contact Department end-to-end (currently zero test coverage)
-- [ ] Add test for `SynthesisDepartmentAgent.run()` with mocked department packages
-- [ ] Add test for fallback package assembly when `max_round` is hit
-- [ ] Add test verifying `run_condition` evaluation skips Contact tasks when Buyer has no prioritized firms
+- [X] Add integration test for a single department AG2 GroupChat run (monkeypatched LLM, real AG2 flow) → `test_integration.py::TestDepartmentGroupChatRun` (3 tests)
+- [X] Add test for Contact Department end-to-end (currently zero test coverage) → `test_integration.py::TestContactDepartmentEndToEnd` (3 tests)
+- [X] Add test for `SynthesisDepartmentAgent.run()` with mocked department packages → `test_integration.py::TestSynthesisDepartmentRun` (2 tests)
+- [X] Add test for fallback package assembly when `max_round` is hit → `test_integration.py::TestFallbackPackageOnMaxRound` (3 tests)
+- [X] Add test verifying `run_condition` evaluation skips Contact tasks when Buyer has no prioritized firms
 
 ---
 
@@ -280,18 +280,18 @@ string names and actual Pydantic classes, a central registry must resolve them.
 
 ### Reduce Unnecessary LLM Calls
 
-- [ ] `finalize_package()` in `lead.py` calls `self.critic.review()` again for every task — this is a second full review pass that duplicates work already done during the chat
-- [ ] Evaluate caching the last review result and reusing it in `finalize_package()` instead of re-running
+- [X] `finalize_package()` in `lead.py` calls `self.critic.review()` again for every task — this is a second full review pass that duplicates work already done during the chat
+- [X] Evaluate caching the last review result and reusing it in `finalize_package()` instead of re-running
 
 ### Search Efficiency
 
-- [ ] Worker caches search results per instance, but each department creates a new `ResearchWorker` — cache is not shared across departments
-- [ ] Evaluate a run-level search cache passed via `run_state` or `memory_store`
+- [X] Worker caches search results per instance, but each department creates a new `ResearchWorker` — cache is not shared across departments
+- [X] Evaluate a run-level search cache passed via `run_state` or `memory_store`
 
 ### Token Budget Awareness
 
-- [ ] No token budget enforcement exists — a verbose LLM response can blow through costs without any guardrail
-- [ ] Add a soft token budget per department (warn) and a hard cap per run (abort)
+- [X] No token budget enforcement exists — a verbose LLM response can blow through costs without any guardrail
+- [X] Add a soft token budget per department (warn) and a hard cap per run (abort)
 
 ---
 
@@ -299,20 +299,20 @@ string names and actual Pydantic classes, a central registry must resolve them.
 
 ### Parallel Department Execution
 
-- [ ] Current: strictly sequential (Company → Market → Buyer → Contact)
-- [ ] Company and Market have no data dependency — they could run in parallel
-- [ ] Contact depends on Buyer output — must remain sequential after Buyer
-- [ ] Evaluate `asyncio` or thread-pool execution for independent departments
+- [X] Current: strictly sequential (Company → Market → Buyer → Contact)
+- [X] Company and Market have no data dependency — they could run in parallel
+- [X] Contact depends on Buyer output — must remain sequential after Buyer
+- [X] Evaluate `asyncio` or thread-pool execution for independent departments
 
 ### Structured Output Mode
 
-- [ ] Worker uses `response_format={"type": "json_object"}` — consider migrating to OpenAI structured outputs with Pydantic schema enforcement for tighter contracts
+- [ ] Worker uses `response_format={"type": "json_object"}` — consider migrating to OpenAI structured outputs with Pydantic schema enforcement for tighter contracts — deferred: current json_object mode is stable
 
 ### Observability
 
-- [ ] No structured logging — all runtime events go through `on_message` callback as flat dicts
-- [ ] Add run-level structured logging (e.g., JSON lines) for debugging failed runs without reading full chat histories
-- [ ] Add per-department timing metrics to `run_meta.json`
+- [X] No structured logging — all runtime events go through `on_message` callback as flat dicts
+- [X] Add run-level structured logging (e.g., JSON lines) for debugging failed runs without reading full chat histories
+- [X] Add per-department timing metrics to `run_meta.json`
 
 ---
 

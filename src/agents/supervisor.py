@@ -5,6 +5,7 @@ from dataclasses import asdict
 
 from src.app.use_cases import build_standard_scope
 from src.config import get_role_model_selection
+from src.config.settings import MAX_TASK_RETRIES
 from src.domain.intake import IntakeRequest, SupervisorBrief
 from src.orchestration.tool_policy import resolve_allowed_tools
 from src.research.extract import infer_industry
@@ -66,7 +67,7 @@ class SupervisorAgent:
     def decide_revision(self, *, task_key: str, review: dict, attempt: int) -> dict[str, str | bool]:
         rejected_points = list(review.get("rejected_points", []))
         method_issue = bool(review.get("method_issue"))
-        if rejected_points and attempt < 2:
+        if rejected_points and attempt < MAX_TASK_RETRIES:
             return {
                 "retry": True,
                 "same_department": True,
@@ -111,21 +112,62 @@ class SupervisorAgent:
     def route_question(self, *, question: str, source: str = "user_ui") -> dict[str, str]:
         """Unified router for both synthesis back-requests and UI follow-up questions.
 
+        Uses weighted keyword scoring with priority tiers. Highest-scoring
+        department wins. Ties are broken by specificity (Contact > Buyer >
+        Market > Synthesis > Company).
+
         source: "synthesis" | "user_ui"
         """
         lowered = question.lower()
-        if any(token in lowered for token in ["contact", "ansprechpartner", "person", "entscheider", "outreach", "linkedin", "name", "rolle"]):
-            route = "ContactDepartment"
-        elif any(token in lowered for token in ["market", "demand", "supply", "capacity", "circular", "analytics", "markt"]):
-            route = "MarketDepartment"
-        elif any(token in lowered for token in ["buyer", "buyers", "resale", "redeployment", "aftermarket", "competitor", "käufer"]):
-            route = "BuyerDepartment"
-        elif any(token in lowered for token in ["opportunity", "liquisto", "meeting", "next step", "synthesis", "briefing", "zusammenfassung"]):
-            route = "SynthesisDepartment"
+
+        # (department, keywords_with_weights) — higher weight = more specific
+        _ROUTING_RULES: list[tuple[str, list[tuple[str, int]]]] = [
+            ("ContactDepartment", [
+                ("contact", 3), ("ansprechpartner", 3), ("entscheider", 3),
+                ("linkedin", 3), ("outreach", 2), ("person", 1), ("name", 1),
+                ("rolle", 2), ("procurement lead", 3), ("decision-maker", 3),
+                ("einkäufer", 3), ("einkauf", 2),
+            ]),
+            ("BuyerDepartment", [
+                ("buyer", 3), ("buyers", 3), ("käufer", 3), ("resale", 3),
+                ("redeployment", 3), ("aftermarket", 3), ("competitor", 2),
+                ("peer", 2), ("downstream", 2), ("monetization", 2),
+                ("wiederverkauf", 3), ("wettbewerber", 2),
+            ]),
+            ("MarketDepartment", [
+                ("market", 2), ("markt", 2), ("demand", 3), ("supply", 3),
+                ("capacity", 2), ("circular", 3), ("analytics", 2),
+                ("repurposing", 3), ("overcapacity", 3), ("nachfrage", 3),
+                ("angebot", 2), ("trend", 1),
+            ]),
+            ("SynthesisDepartment", [
+                ("opportunity", 3), ("liquisto", 3), ("meeting", 2),
+                ("next step", 3), ("synthesis", 3), ("briefing", 3),
+                ("zusammenfassung", 3), ("gesamtbild", 3), ("strategie", 2),
+            ]),
+            ("CompanyDepartment", [
+                ("company", 2), ("firma", 2), ("unternehmen", 2),
+                ("revenue", 2), ("umsatz", 2), ("product", 1), ("produkt", 1),
+                ("economic", 2), ("wirtschaftlich", 2), ("inventory", 2),
+                ("bestand", 2), ("founded", 1), ("gegründet", 1),
+            ]),
+        ]
+
+        scores: dict[str, int] = {}
+        for dept, keywords in _ROUTING_RULES:
+            score = sum(weight for kw, weight in keywords if kw in lowered)
+            scores[dept] = score
+
+        max_score = max(scores.values()) if scores else 0
+        if max_score > 0:
+            # Pick highest score; list order breaks ties (Contact > Buyer > ...)
+            route = next(dept for dept, _ in _ROUTING_RULES if scores[dept] == max_score)
         else:
+            # No keyword matched at all — default to CompanyDepartment
             route = "CompanyDepartment"
+
         return {
             "route": route,
-            "reason": f"Question routed to {route} based on dominant topic.",
+            "reason": f"Question routed to {route} (score: {scores.get(route, 0)}).",
             "source": source,
         }

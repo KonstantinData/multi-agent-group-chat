@@ -137,7 +137,7 @@ def run_pipeline(
             )
         )
 
-        sections, department_packages, loop_messages, completed_backlog = run_supervisor_loop(
+        sections, department_packages, loop_messages, completed_backlog, department_timings = run_supervisor_loop(
             brief=brief,
             run_context=run_context,
             agents=agents,
@@ -233,6 +233,7 @@ def run_pipeline(
             "page_fetches_used": int(usage_totals.get("page_fetches", 0) or 0),
             "estimated_cost_usd": float(usage_total.get("total_cost", 0.0) or 0.0),
             "elapsed_seconds": elapsed_seconds,
+            "department_timings": department_timings,
         }
         run_context_snapshot = run_context.snapshot()
 

@@ -24,9 +24,12 @@ class DepartmentRuntime:
     ``agents["departments"][name].run(...)``.
     """
 
-    def __init__(self, department: str) -> None:
+    def __init__(self, department: str, *, search_cache: dict | None = None) -> None:
         self.department = department
         self.lead = DepartmentLeadAgent(department)
+        if search_cache is not None:
+            self.lead.worker._search_cache = search_cache
+            self.lead.worker._page_cache = search_cache.setdefault("__pages__", {})
 
     def run(
         self,

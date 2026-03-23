@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock
+
 
 class FileLongTermMemoryStore:
     """Persist reusable strategy patterns across runs."""
@@ -12,6 +14,7 @@ class FileLongTermMemoryStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = FileLock(str(self.path) + ".lock")
         if not self.path.exists():
             self.path.write_text("[]", encoding="utf-8")
 
@@ -48,12 +51,13 @@ class FileLongTermMemoryStore:
         return [item for _, item in scored[:limit]]
 
     def upsert_strategy(self, pattern: dict[str, Any]) -> None:
-        items = self.load()
-        existing_index = next((idx for idx, item in enumerate(items) if item.get("name") == pattern.get("name")), None)
-        if existing_index is None:
-            items.append(pattern)
-        else:
-            existing = items[existing_index]
-            if float(pattern.get("score", 0.0)) >= float(existing.get("score", 0.0)):
-                items[existing_index] = pattern
-        self.path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+        with self._lock:
+            items = self.load()
+            existing_index = next((idx for idx, item in enumerate(items) if item.get("name") == pattern.get("name")), None)
+            if existing_index is None:
+                items.append(pattern)
+            else:
+                existing = items[existing_index]
+                if float(pattern.get("score", 0.0)) >= float(existing.get("score", 0.0)):
+                    items[existing_index] = pattern
+            self.path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")

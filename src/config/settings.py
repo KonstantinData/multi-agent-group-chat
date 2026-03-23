@@ -10,6 +10,9 @@ from dotenv import dotenv_values
 
 DEFAULT_MODEL = "gpt-4.1-mini"
 DEFAULT_STRUCTURED_MODEL = "gpt-4.1-mini"
+MAX_TASK_RETRIES = int(os.getenv("LIQUISTO_MAX_TASK_RETRIES", "2"))
+SOFT_TOKEN_BUDGET = int(os.getenv("LIQUISTO_SOFT_TOKEN_BUDGET", "200000"))
+HARD_TOKEN_CAP = int(os.getenv("LIQUISTO_HARD_TOKEN_CAP", "500000"))
 ROOT = Path(__file__).resolve().parents[2]
 ROLE_MODEL_DEFAULTS = {
     "Supervisor": "gpt-4.1",

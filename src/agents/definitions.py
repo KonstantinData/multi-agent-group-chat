@@ -44,13 +44,14 @@ AGENT_SPECS = {
 
 def create_runtime_agents() -> dict[str, object]:
     """Instantiate the runtime agents used by the pipeline."""
+    shared_search_cache: dict = {}  # run-level cache shared across departments
     return {
         "supervisor": SupervisorAgent(),
         "departments": {
-            "CompanyDepartment": DepartmentRuntime("CompanyDepartment"),
-            "MarketDepartment": DepartmentRuntime("MarketDepartment"),
-            "BuyerDepartment": DepartmentRuntime("BuyerDepartment"),
-            "ContactDepartment": DepartmentRuntime("ContactDepartment"),
+            "CompanyDepartment": DepartmentRuntime("CompanyDepartment", search_cache=shared_search_cache),
+            "MarketDepartment": DepartmentRuntime("MarketDepartment", search_cache=shared_search_cache),
+            "BuyerDepartment": DepartmentRuntime("BuyerDepartment", search_cache=shared_search_cache),
+            "ContactDepartment": DepartmentRuntime("ContactDepartment", search_cache=shared_search_cache),
         },
         "synthesis": SynthesisRuntime(),
         "report_writer": ReportWriterAgent(),

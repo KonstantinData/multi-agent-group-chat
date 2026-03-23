@@ -24,6 +24,7 @@ from autogen import ConversableAgent, GroupChat, GroupChatManager, register_func
 from src.config.settings import get_openai_api_key, get_role_model_selection
 from src.domain.intake import SupervisorBrief
 from src.models.schemas import BackRequest
+from src.orchestration.speaker_selector import build_synthesis_selector
 
 
 MessageHook = Callable[[dict[str, Any]], None] | None
@@ -60,6 +61,7 @@ class SynthesisDepartmentAgent:
         departments: dict[str, Any],
         memory_store=None,
         on_message: MessageHook = None,
+        synthesis_context: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Run the synthesis GroupChat. Returns (synthesis_payload, messages)."""
         self._completed_synthesis = None
@@ -68,6 +70,8 @@ class SynthesisDepartmentAgent:
             "department_packages": department_packages,
             "back_requests": [],
             "synthesis_result": {},
+            "synthesis_step": "start",
+            "synthesis_context": synthesis_context or {},
         }
 
         # ── ConversableAgents ──────────────────────────────────────────
@@ -172,18 +176,45 @@ class SynthesisDepartmentAgent:
         ) -> str:
             """Assemble and submit the final synthesis. Terminates the group chat."""
             back_requests = run_state["back_requests"]
+            ctx = run_state.get("synthesis_context", {})
+            dept_confidences = {
+                dept: run_state["department_packages"].get(dept, {})
+                .get("report_segment", {})
+                .get("confidence", "n/v")
+                for dept in _SYNTHESIS_DEPARTMENTS
+            }
+            # Derive overall confidence from department confidences
+            conf_values = [v for v in dept_confidences.values() if v not in ("n/v", "")]
+            if all(c == "high" for c in conf_values) and conf_values:
+                overall_confidence = "high"
+            elif any(c in ("high", "medium") for c in conf_values):
+                overall_confidence = "medium"
+            else:
+                overall_confidence = "low"
+
+            # Build Synthesis-schema-compliant output
             synthesis = {
-                "opportunity_assessment": opportunity_assessment,
-                "negotiation_relevance": negotiation_relevance,
+                "target_company": ctx.get("target_company", brief.company_name),
                 "executive_summary": executive_summary,
+                "opportunity_assessment": opportunity_assessment,
+                "opportunity_assessment_summary": opportunity_assessment,
+                "negotiation_relevance": negotiation_relevance,
+                "liquisto_service_relevance": ctx.get("liquisto_service_relevance", []),
+                "recommended_engagement_paths": ctx.get("recommended_engagement_paths", []),
+                "case_assessments": ctx.get("case_assessments", []),
+                "buyer_market_summary": ctx.get("buyer_market_summary", "n/v"),
+                "total_peer_competitors": ctx.get("total_peer_competitors", 0),
+                "total_downstream_buyers": ctx.get("total_downstream_buyers", 0),
+                "total_service_providers": ctx.get("total_service_providers", 0),
+                "total_cross_industry_buyers": ctx.get("total_cross_industry_buyers", 0),
+                "key_risks": ctx.get("key_risks", []),
+                "next_steps": ctx.get("next_steps", []),
+                "sources": ctx.get("sources", []),
+                "generation_mode": "normal",
+                "confidence": overall_confidence,
                 "back_requests_issued": len(back_requests),
                 "back_requests": back_requests,
-                "department_confidences": {
-                    dept: run_state["department_packages"].get(dept, {})
-                    .get("report_segment", {})
-                    .get("confidence", "n/v")
-                    for dept in _SYNTHESIS_DEPARTMENTS
-                },
+                "department_confidences": dept_confidences,
             }
             run_state["synthesis_result"] = synthesis
             self._completed_synthesis = synthesis
@@ -215,11 +246,25 @@ class SynthesisDepartmentAgent:
         )
 
         # ── GroupChat ──────────────────────────────────────────────────
+        agent_map = {
+            self.name: lead_ca,
+            self.analyst_name: analyst_ca,
+            self.critic_name: critic_ca,
+            self.judge_name: judge_ca,
+        }
+        speaker_selector = build_synthesis_selector(
+            run_state=run_state,
+            agent_map=agent_map,
+            lead_name=self.name,
+            analyst_name=self.analyst_name,
+            critic_name=self.critic_name,
+            judge_name=self.judge_name,
+        )
         groupchat = GroupChat(
             agents=[lead_ca, analyst_ca, critic_ca, judge_ca],
             messages=[],
             max_round=20,
-            speaker_selection_method="auto",
+            speaker_selection_method=speaker_selector,
         )
         manager = GroupChatManager(
             groupchat=groupchat,
@@ -231,11 +276,22 @@ class SynthesisDepartmentAgent:
             d for d in _SYNTHESIS_DEPARTMENTS
             if department_packages.get(d, {}).get("report_segment", {}).get("narrative_summary", "n/v") != "n/v"
         ]
+        # Include synthesis context summary in initiation message so the LLM
+        # has the pre-computed structural data available from the start.
+        ctx_summary = {}
+        if synthesis_context:
+            ctx_summary = {
+                "service_relevance": synthesis_context.get("liquisto_service_relevance", []),
+                "recommended_paths": synthesis_context.get("recommended_engagement_paths", []),
+                "key_risks": synthesis_context.get("key_risks", []),
+                "buyer_market_summary": synthesis_context.get("buyer_market_summary", "n/v"),
+            }
         initiation_message = json.dumps(
             {
                 "status": "synthesis_started",
                 "company": brief.company_name,
                 "available_segments": available_segments,
+                "pre_computed_context": ctx_summary,
                 "instructions": (
                     f"Read all available report segments, identify cross-domain patterns, "
                     f"assess the Liquisto opportunity, and finalize the synthesis for {brief.company_name}."
@@ -259,10 +315,26 @@ class SynthesisDepartmentAgent:
                 on_message(event)
 
         if self._completed_synthesis is None:
+            ctx = run_state.get("synthesis_context", {})
             self._completed_synthesis = {
+                "target_company": ctx.get("target_company", brief.company_name),
                 "opportunity_assessment": "Synthesis did not complete within max_round.",
+                "opportunity_assessment_summary": "Synthesis did not complete within max_round.",
                 "negotiation_relevance": "n/v",
                 "executive_summary": "Conservative output — synthesis incomplete.",
+                "liquisto_service_relevance": ctx.get("liquisto_service_relevance", []),
+                "recommended_engagement_paths": ctx.get("recommended_engagement_paths", []),
+                "case_assessments": ctx.get("case_assessments", []),
+                "buyer_market_summary": ctx.get("buyer_market_summary", "n/v"),
+                "total_peer_competitors": ctx.get("total_peer_competitors", 0),
+                "total_downstream_buyers": ctx.get("total_downstream_buyers", 0),
+                "total_service_providers": ctx.get("total_service_providers", 0),
+                "total_cross_industry_buyers": ctx.get("total_cross_industry_buyers", 0),
+                "key_risks": ctx.get("key_risks", []),
+                "next_steps": ctx.get("next_steps", []),
+                "sources": ctx.get("sources", []),
+                "generation_mode": "fallback",
+                "confidence": ctx.get("confidence", "low"),
                 "back_requests_issued": 0,
                 "back_requests": [],
                 "department_confidences": {},

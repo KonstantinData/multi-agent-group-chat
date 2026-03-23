@@ -339,6 +339,7 @@ def test_build_synthesis_context_returns_confidence_from_quality_review():
             "monetization_paths": [],
             "redeployment_paths": [],
         },
+        contact_intelligence={},
         quality_review={"evidence_health": "medium", "open_gaps": []},
         memory_snapshot={"sources": [], "next_actions": []},
     )
@@ -359,6 +360,7 @@ def test_synthesis_fallback_confidence_not_forced_low():
             "monetization_paths": ["resale path"],
             "redeployment_paths": ["redeployment path"],
         },
+        contact_intelligence={},
         quality_review={"evidence_health": "high", "open_gaps": []},
         memory_snapshot={"sources": [], "next_actions": []},
     )

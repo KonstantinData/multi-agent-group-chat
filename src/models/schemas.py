@@ -94,6 +94,7 @@ class CompanyProfile(BaseModel):
         default_factory=list,
         validation_alias=AliasChoices("product_asset_scope", "product_material_relevance"),
     )
+    goods_classification: str = "n/v"  # made | distributed | held_in_stock | mixed | unclear
     key_people: list[KeyPerson] = Field(default_factory=list)
     description: str = "n/v"
     economic_situation: EconomicSituation = Field(default_factory=EconomicSituation)

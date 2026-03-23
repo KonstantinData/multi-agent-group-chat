@@ -5,4 +5,4 @@ secondaryBackgroundColor = "#f8f9fa"
 textColor = "#212529"
 
 [server]
-headless = true
+headless = false

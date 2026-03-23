@@ -84,17 +84,53 @@ class SupervisorAgent:
     def accept_department_package(self, *, department: str, package: dict) -> dict[str, str | bool]:
         completed_tasks = package.get("completed_tasks", [])
         open_questions = package.get("open_questions", [])
-        has_payload = bool(package.get("section_payload"))
-        accepted = has_payload and bool(completed_tasks)
-        reason = (
-            f"{department} package accepted for synthesis."
-            if accepted
-            else f"{department} package remains incomplete and should be marked conservative."
-        )
+        section_payload = package.get("section_payload", {})
+        has_payload = bool(section_payload)
+
+        # Substantive content check: payload must contain non-empty data
+        # beyond just default/skeleton fields
+        substantive = False
+        if has_payload:
+            for key, value in section_payload.items():
+                if key == "sources":
+                    continue
+                if isinstance(value, str) and value not in ("", "n/v"):
+                    substantive = True
+                    break
+                if isinstance(value, list) and value:
+                    substantive = True
+                    break
+                if isinstance(value, dict):
+                    companies = value.get("companies", [])
+                    if isinstance(companies, list) and companies:
+                        substantive = True
+                        break
+                    inner_vals = [v for k, v in value.items() if k not in ("assessment", "sources")]
+                    if any(v for v in inner_vals if v and v != "n/v"):
+                        substantive = True
+                        break
+
+        # Task quality check: at least one task must be accepted
+        accepted_tasks = sum(1 for t in completed_tasks if t.get("status") == "accepted")
+        rejected_tasks = sum(1 for t in completed_tasks if t.get("status") == "rejected")
+        all_rejected = rejected_tasks == len(completed_tasks) and len(completed_tasks) > 0
+
+        accepted = has_payload and bool(completed_tasks) and substantive and not all_rejected
+        if not substantive and has_payload:
+            reason = f"{department} package has payload structure but lacks substantive content. Marked conservative."
+        elif all_rejected:
+            reason = f"{department} package rejected — all tasks failed."
+        elif accepted:
+            reason = f"{department} package accepted for synthesis ({accepted_tasks}/{len(completed_tasks)} tasks accepted)."
+        else:
+            reason = f"{department} package remains incomplete and should be marked conservative."
         return {
             "accepted": accepted,
             "reason": reason,
             "open_questions_present": bool(open_questions),
+            "substantive_content": substantive,
+            "accepted_tasks": accepted_tasks,
+            "total_tasks": len(completed_tasks),
         }
 
     def accept_synthesis(self, *, synthesis_payload: dict) -> dict[str, str | bool]:

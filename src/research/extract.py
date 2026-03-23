@@ -1,6 +1,9 @@
 """Lightweight extraction helpers from website text and search results."""
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
 
 
@@ -13,20 +16,102 @@ _STOPWORDS = {
     "figures", "facts", "development", "company", "group", "corporate",
     "global", "international", "worldwide", "site", "page", "website",
     "read", "more", "learn", "discover", "explore", "download",
+    # Location / legal noise
+    "friedrichshafen", "stuttgart", "munich", "berlin", "hamburg",
+    "deutschland", "germany", "europe", "business", "services",
+    "solutions", "management", "information", "technology",
 }
 
+# Technical / product-relevant patterns (multi-word and lowercase)
+_PRODUCT_PATTERNS = [
+    r"\b(?:electric|e-)\s*(?:drive|motor|powertrain|mobility)s?\b",
+    r"\b(?:wind|solar|hydro)\s*(?:power|turbine|energy)s?\b",
+    r"\b(?:chassis|transmission|axle|driveline|steering|brake|suspension)s?\b",
+    r"\b(?:spare\s+parts?|aftermarket|components?|modules?)\b",
+    r"\b(?:sensor|actuator|controller|inverter|converter)s?\b",
+    r"\b(?:bearing|gear|clutch|coupling|shaft|seal)s?\b",
+    r"\b(?:autonomous\s+driving|adas|lidar|radar)\b",
+    r"\b(?:commercial\s+vehicle|truck|bus|off-highway|marine)s?\b",
+    r"\b(?:industrial\s+technology|test\s+system|automation)s?\b",
+]
 
-def extract_product_keywords(text: str) -> list[str]:
-    candidates = re.findall(r"\b[A-Z][a-zA-Z0-9-]{3,}\b", text or "")
+
+def extract_product_keywords(text: str, *, company_name: str = "") -> list[str]:
+    """Extract product/service keywords from visible website text.
+
+    Strategy:
+    1. Try LLM extraction (fast, cheap call) if API key available and not in test.
+    2. Fall back to pattern + regex extraction.
+    """
+    if not (text or "").strip():
+        return []
+    # Try LLM-based extraction first
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        llm_keywords = _llm_extract_keywords(text, company_name=company_name)
+        if llm_keywords:
+            return llm_keywords[:8]
+    return _regex_extract_keywords(text, company_name=company_name)
+
+
+def _llm_extract_keywords(text: str, *, company_name: str = "") -> list[str]:
+    """Use a cheap LLM call to extract product keywords."""
+    try:
+        from openai import OpenAI
+        from src.config.settings import get_openai_api_key
+        api_key = get_openai_api_key()
+        if not api_key:
+            return []
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4.1-nano",
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": (
+                    "Extract 4-8 product/service keywords from the company website text. "
+                    "Return JSON: {\"keywords\": [\"keyword1\", ...]}. "
+                    "Focus on: products manufactured, goods traded, services offered, "
+                    "technology domains, material categories. "
+                    "Exclude: city names, legal suffixes, generic business terms."
+                )},
+                {"role": "user", "content": f"Company: {company_name}\nText: {text[:800]}"},
+            ],
+        )
+        raw = json.loads(response.choices[0].message.content or "{}")
+        keywords = raw.get("keywords", [])
+        return [str(k).strip() for k in keywords if isinstance(k, str) and k.strip()][:8]
+    except Exception as exc:
+        logging.debug("LLM keyword extraction failed: %s", exc)
+        return []
+
+
+def _regex_extract_keywords(text: str, *, company_name: str = "") -> list[str]:
+    """Pattern + regex fallback for keyword extraction."""
     keywords: list[str] = []
-    for item in candidates:
-        if item.lower() in _STOPWORDS:
+    seen_lower: set[str] = set()
+    company_tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9]+", company_name)} if company_name else set()
+
+    # Phase 1: domain-specific multi-word patterns
+    for pattern in _PRODUCT_PATTERNS:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            term = match.group(0).strip()
+            if term.lower() not in seen_lower:
+                seen_lower.add(term.lower())
+                keywords.append(term)
+
+    # Phase 2: capitalized terms (original approach, but with better filtering)
+    for match in re.findall(r"\b[A-Z][a-zA-Z0-9-]{2,}(?:\s+[A-Z][a-zA-Z0-9-]{2,}){0,2}\b", text or ""):
+        term = match.strip()
+        if term.lower() in _STOPWORDS or term.lower() in seen_lower:
             continue
-        if item not in keywords:
-            keywords.append(item)
+        if term.lower() in company_tokens:
+            continue
+        seen_lower.add(term.lower())
+        keywords.append(term)
         if len(keywords) >= 8:
             break
-    return keywords
+
+    return keywords[:8]
 
 
 def infer_industry(title: str, description: str, text: str) -> str:

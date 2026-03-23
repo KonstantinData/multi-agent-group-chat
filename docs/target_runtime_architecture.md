@@ -37,10 +37,11 @@ Non-responsibilities:
 
 ### Domain Departments
 
-The research plane is split into three domain departments:
+The research plane is split into four domain departments:
 - `Company Department`
 - `Market Department`
 - `Buyer Department`
+- `Contact Department`
 
 Each department is implemented as an AutoGen-style internal group with bounded
 multi-agent collaboration.
@@ -95,6 +96,12 @@ Questions owned:
 - which items are made by the company, distributed/resold, or held in stock
 - which public signals suggest economic or commercial pressure
 
+The `CompanyLead` owns the goods classification. The Researcher delivers raw
+evidence about visible products and assets, but the Lead applies the
+classification frame (`made_vs_distributed_vs_held_in_stock`) and writes the
+final classification into the department package. This is a domain judgment,
+not a research task.
+
 ### Market Department
 
 Questions owned:
@@ -110,6 +117,21 @@ Questions owned:
 - plausible buyers
 - resale, redeployment, reuse, or secondary-market paths
 - likely downstream, service, broker, distributor, or cross-industry routes
+
+### Contact Department
+
+Questions owned:
+- decision-maker contacts at prioritized buyer firms
+- procurement leads, COO/VP operations, asset management contacts
+- seniority and function classification per contact
+- outreach angles per contact based on Liquisto's business model
+
+The Contact Department runs after the Buyer Department. It reads
+`buyer_candidates` from the approved `market_network` package and builds
+contact queries per firm. If no buyer candidates are available, the department
+falls back to industry-scoped contact discovery.
+
+Output section: `contact_intelligence`.
 
 ## AutoGen Department Groups
 
@@ -131,7 +153,8 @@ Each department group consists of five `ConversableAgent` instances:
 ### Conversation mechanics
 
 - The Lead initiates the chat via `initiate_chat` with the investigation plan
-- `GroupChatManager` with `speaker_selection_method="auto"` routes turns
+- `GroupChatManager` with a custom `speaker_selection_method` (state-machine
+  selector) routes turns based on workflow phase and tool-call state
 - The Lead explicitly addresses the next agent in every message
 - Tools are Python closures registered per agent via `register_function`
 - The chat terminates when the Lead calls `finalize_package`, which returns `TERMINATE`
@@ -165,7 +188,7 @@ department group — the boundary is a Python method call, not a chat turn.
 
 ### Implementation requirements
 
-- fixed role profiles per department (CompanyLead, MarketLead, BuyerLead)
+- fixed role profiles per department (CompanyLead, MarketLead, BuyerLead, ContactLead)
 - max_round = number of assignments × 15 (hard cap)
 - termination via `finalize_package` returning `TERMINATE` in message content
 - structured `DepartmentPackage` output, not a raw chat log

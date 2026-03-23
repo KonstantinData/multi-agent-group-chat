@@ -38,7 +38,7 @@ def build_quality_review(memory_snapshot: dict[str, Any]) -> dict[str, Any]:
     elif len(accepted_backlog) >= 6 and len(external_sources) >= 1:
         evidence_health = "medium"
     return {
-        "validated_agents": ["Supervisor", "CompanyDepartment", "MarketDepartment", "BuyerDepartment", *sorted(approved_tasks)],
+        "validated_agents": ["Supervisor", "CompanyDepartment", "MarketDepartment", "BuyerDepartment", "ContactDepartment", *sorted(approved_tasks)],
         "evidence_health": evidence_health,
         "open_gaps": list(dict.fromkeys([*open_questions, *unresolved_points])),
         "recommendations": [
@@ -59,19 +59,44 @@ def build_quality_review(memory_snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _service_relevance(industry: dict[str, Any], market: dict[str, Any]) -> list[dict[str, str]]:
+_ECO_PRESSURE_KEYWORDS = (
+    "restructur", "layoff", "redundanc", "downsiz", "excess stock",
+    "write-down", "inventory pressure", "plant clos", "workforce reduc",
+    "job cut", "cost cut", "shutdown", "overstock",
+)
+
+
+def _service_relevance(
+    industry: dict[str, Any],
+    market: dict[str, Any],
+    company_profile: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     monetization = _positive_signals(market.get("monetization_paths", []))
     redeployment = _positive_signals(market.get("redeployment_paths", []))
     analytics = _positive_signals(industry.get("analytics_signals", []))
     downstream_buyers = market.get("downstream_buyers", {}).get("companies", [])
 
+    # Check economic_situation for restructuring / inventory pressure signals
+    eco = (company_profile or {}).get("economic_situation", {})
+    eco_text = " ".join(
+        [
+            " ".join(str(e) for e in eco.get("recent_events", [])),
+            str(eco.get("assessment", "")),
+            str(eco.get("financial_pressure", "")),
+        ]
+    ).lower()
+    has_eco_pressure = any(kw in eco_text for kw in _ECO_PRESSURE_KEYWORDS)
+
     items: list[dict[str, str]] = []
+    excess_positive = (monetization and downstream_buyers) or has_eco_pressure
     items.append(
         {
             "service_area": "excess_inventory",
-            "relevance": "medium" if monetization and downstream_buyers else "unclear",
+            "relevance": "medium" if excess_positive else "unclear",
             "reasoning": (
-                "Indicative resale or buyer routes were identified with at least one buyer signal."
+                "Economic pressure signals (restructuring, layoffs, or inventory stress) indicate potential excess asset disposition needs."
+                if has_eco_pressure and not (monetization and downstream_buyers)
+                else "Indicative resale or buyer routes were identified with at least one buyer signal."
                 if monetization and downstream_buyers
                 else "No validated monetization route with buyer evidence is available yet."
             ),
@@ -107,6 +132,7 @@ def build_synthesis_context(
     company_profile: dict[str, Any],
     industry_analysis: dict[str, Any],
     market_network: dict[str, Any],
+    contact_intelligence: dict[str, Any],
     quality_review: dict[str, Any],
     memory_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
@@ -119,7 +145,7 @@ def build_synthesis_context(
     generation_mode="fallback".  Confidence is derived from input package
     quality — fallback does NOT automatically mean low confidence.
     """
-    service_relevance = _service_relevance(industry_analysis, market_network)
+    service_relevance = _service_relevance(industry_analysis, market_network, company_profile)
     if quality_review.get("evidence_health") == "low":
         service_relevance = [
             {
@@ -186,8 +212,7 @@ def build_synthesis_context(
             _fallback_risks.append("Downstream buyer list is indicative only — validate against CRM.")
         if not market_network.get("cross_industry_buyers", {}).get("companies"):
             _fallback_risks.append("Cross-industry buyer paths not identified — may limit resale scope.")
-        contact_intel = memory_snapshot.get("contact_intelligence", {})
-        if not (contact_intel.get("verified_contacts") or contact_intel.get("buyer_contacts")):
+        if not (contact_intelligence.get("verified_contacts") or contact_intelligence.get("contacts")):
             _fallback_risks.append("No verified decision-maker contacts found — identify procurement lead before outreach.")
         key_risks = _fallback_risks or ["Evidence base is solid; validate contacts and financials directly in the meeting."]
     else:
@@ -196,13 +221,18 @@ def build_synthesis_context(
         "Validate buyer paths and inventory pressure directly with the prospect."
     ]
 
+    verified_contacts = contact_intelligence.get("contacts", [])
+    contact_coverage = contact_intelligence.get("coverage_quality", "n/v")
+
     return {
         "target_company": company_profile.get("company_name", "n/v"),
         "executive_summary": (
             f"{company_profile.get('company_name', 'The target company')} appears to operate in "
             f"{company_profile.get('industry', 'an unclear industry')}. "
-            "The briefing is based on approved company, market, and buyer department packages."
+            "The briefing is based on approved company, market, buyer, and contact department packages."
         ),
+        "contact_coverage": contact_coverage,
+        "total_verified_contacts": len(verified_contacts),
         "liquisto_service_relevance": service_relevance,
         "opportunity_assessment_summary": (
             "The most plausible Liquisto path was derived after cross-domain review of the approved department packages."
@@ -243,6 +273,7 @@ def build_report_package(
             "Company snapshot",
             "Market and operational signals",
             "Buyer and redeployment paths",
+            "Contact intelligence and outreach angles",
             "Liquisto opportunity assessment",
             "Negotiation relevance and next steps",
             "Evidence appendix",
@@ -256,22 +287,38 @@ def assess_research_readiness(
     company_profile: dict[str, Any],
     industry_analysis: dict[str, Any],
     market_network: dict[str, Any],
+    contact_intelligence: dict[str, Any],
     quality_review: dict[str, Any],
 ) -> dict[str, Any]:
     score = 0
     reasons: list[str] = []
+    # Core sections (80 pts total)
     if company_profile.get("company_name") != "n/v":
-        score += 35
+        score += 30
     else:
         reasons.append("Company profile is still incomplete.")
     if industry_analysis.get("industry_name") != "n/v":
-        score += 25
+        score += 20
     else:
         reasons.append("Industry analysis is incomplete.")
     if market_network.get("target_company") != "n/v":
-        score += 20
+        score += 15
     else:
         reasons.append("Buyer landscape is incomplete.")
+    # Contact section (15 pts — optional, but scored)
+    has_contacts = bool(
+        contact_intelligence.get("contacts")
+        or contact_intelligence.get("prioritized_contacts")
+    )
+    contact_coverage = str(contact_intelligence.get("coverage_quality", "n/v")).lower()
+    if has_contacts and contact_coverage not in {"n/v", "low"}:
+        score += 15
+    elif has_contacts:
+        score += 8
+        reasons.append("Contact coverage is low — identify procurement lead before outreach.")
+    else:
+        reasons.append("No verified contacts found — identify decision-maker before outreach.")
+    # Evidence quality (20 pts)
     if quality_review.get("evidence_health") == "high":
         score += 20
     elif quality_review.get("evidence_health") == "medium":
@@ -281,5 +328,11 @@ def assess_research_readiness(
         reasons.append("Evidence quality is too weak for a confident meeting brief.")
     if quality_review.get("open_gaps"):
         reasons.append("Open critic gaps remain unresolved.")
-    usable = score >= 70 and quality_review.get("evidence_health") in {"high", "medium"}
-    return {"usable": usable, "score": score, "reasons": reasons}
+    # Core sections (company + market) determine usability; contact is optional
+    core_score = (30 if company_profile.get("company_name") != "n/v" else 0) + (15 if market_network.get("target_company") != "n/v" else 0)
+    usable = score >= 60 and quality_review.get("evidence_health") in {"high", "medium"}
+    partial = not usable and core_score >= 30 and quality_review.get("evidence_health") in {"high", "medium", "low"}
+    result = {"usable": usable, "score": score, "reasons": reasons}
+    if partial:
+        result["partial"] = True
+    return result

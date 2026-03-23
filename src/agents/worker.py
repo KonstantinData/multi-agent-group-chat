@@ -157,7 +157,9 @@ class ResearchWorker:
             brief.meta_description,
             brief.raw_homepage_excerpt,
         )
-        product_keywords = extract_product_keywords(brief.raw_homepage_excerpt)
+        product_keywords = extract_product_keywords(
+            brief.raw_homepage_excerpt, company_name=brief.company_name,
+        )
         return {
             "industry_hint": industry_hint or "n/v",
             "product_keywords": product_keywords,
@@ -168,15 +170,19 @@ class ResearchWorker:
         company_name = brief.company_name
         industry_hint = hints["industry_hint"]
         product_keywords = hints["product_keywords"]
-        if task_key in {"company_fundamentals", "economic_commercial_situation", "product_asset_scope"}:
+        if task_key == "economic_commercial_situation":
+            # Own distinct queries — intentionally do NOT reuse build_company_queries()
+            # to avoid shared-cache hits that return company-identity results instead of
+            # economic-signal results.
+            return [
+                f"\"{company_name}\" revenue growth financial results",
+                f"\"{company_name}\" restructuring layoffs insolvency",
+                f"\"{company_name}\" inventory write-down excess stock",
+                f"\"{company_name}\" M&A acquisition cost cutting",
+            ]
+
+        if task_key in {"company_fundamentals", "product_asset_scope"}:
             queries = build_company_queries(company_name, brief.normalized_domain)
-            if task_key == "economic_commercial_situation":
-                queries.extend(
-                    [
-                        f"\"{company_name}\" revenue growth demand",
-                        f"\"{company_name}\" inventory excess restructuring",
-                    ]
-                )
             if task_key == "product_asset_scope":
                 queries.extend(
                     [
@@ -205,36 +211,44 @@ class ResearchWorker:
             return queries
 
         if task_key in {"contact_discovery", "contact_qualification"}:
-            buyer_candidates = (current_section or {}).get("buyer_candidates", [])
-            queries = []
-            for candidate in buyer_candidates[:3]:
+            raw_candidates = (current_section or {}).get("buyer_candidates") or []
+            # Resolve each candidate to a plain firm name string; skip any that
+            # look like schema field-path artefacts (no spaces, contains dots)
+            buyer_candidates: list[str] = []
+            for candidate in raw_candidates:
                 firm = ""
                 if isinstance(candidate, str):
                     firm = candidate.strip()
                 elif isinstance(candidate, dict):
                     firm = (candidate.get("company_name") or candidate.get("name") or "").strip()
-                if firm:
-                    queries.extend([
-                        f'"{firm}" procurement head supply chain director',
-                        f'"{firm}" COO VP operations asset management',
-                    ])
+                # Guard: reject placeholder/field-path strings
+                if firm and firm not in {"n/v", "n/a", "target_company"} and "." not in firm:
+                    buyer_candidates.append(firm)
+            queries = []
+            for firm in buyer_candidates[:3]:
+                queries.extend([
+                    f'"{firm}" procurement head supply chain director',
+                    f'"{firm}" COO VP operations asset management',
+                ])
             if not queries:
+                # No valid buyer candidates — fall back to target company + industry
                 queries = [
-                    f'"{company_name}" procurement manager supply chain director',
-                    f'"{company_name}" head of operations asset management',
-                    f'{industry_hint} procurement director decision maker LinkedIn',
-                    f'"{company_name}" key contacts leadership team',
+                    f'"{company_name}" procurement head supply chain director',
+                    f'"{company_name}" COO VP operations asset management',
+                    f'"{company_name}" {industry_hint} key accounts customer contacts',
+                    f'{industry_hint} procurement director head of purchasing decision maker',
                 ]
             return queries[:4]
 
-        queries = build_buyer_queries(company_name, product_keywords, industry_hint)
         if task_key == "peer_companies":
-            queries.extend(
-                [
-                    f"\"{company_name}\" competitors manufacturers",
-                    f"{industry_hint} manufacturers europe competitors",
-                ]
-            )
+            # Put targeted competitor queries FIRST so they survive the [:4] search cap
+            peer_queries = [
+                f"\"{company_name}\" competitors manufacturers",
+                f"{industry_hint} manufacturers europe competitors",
+            ]
+            base_queries = build_buyer_queries(company_name, product_keywords, industry_hint)
+            return list(dict.fromkeys([*peer_queries, *base_queries]))
+        queries = build_buyer_queries(company_name, product_keywords, industry_hint)
         if task_key == "monetization_redeployment":
             queries.extend(
                 [
@@ -339,6 +353,90 @@ class ResearchWorker:
 
     def _llm_synthesis(self, evidence_pack: dict[str, Any], *, model_name: str | None = None) -> dict[str, Any]:
         config = get_llm_config(role=self.name, model=model_name)
+        task_key = str(evidence_pack.get("task_key", ""))
+        revision_request = evidence_pack.get("revision_request") or {}
+
+        system_parts = [
+            "You are a Liquisto research worker. Use only the supplied evidence. "
+            "Never invent companies, URLs, or claims. If evidence is weak, keep outputs conservative. "
+            "Return JSON with keys: payload_updates, facts, market_signals, buyer_hypotheses, "
+            "open_questions, next_actions. payload_updates must only contain fields for the target section.",
+        ]
+
+        # Task-specific prompt extensions
+        if task_key == "company_fundamentals":
+            system_parts.append(
+                "For company_fundamentals: extract CONCRETE structured fields directly from the evidence. "
+                "You MUST populate: founded (year as string, e.g. '1915'), headquarters (city, country), "
+                "employees (number as string, e.g. '150000'), revenue (e.g. '38 billion EUR'), "
+                "goods_classification ('manufacturer', 'distributor', 'held_in_stock', 'mixed', or 'unclear'). "
+                "If a field is mentioned anywhere in the evidence (titles, summaries, page excerpts), extract it. "
+                "Only use 'n/v' if the field is genuinely absent from ALL evidence."
+            )
+
+        if task_key in {"contact_discovery", "contact_qualification"}:
+            system_parts.append(
+                "For contact tasks: extract REAL person names, job titles, and companies directly from "
+                "the search result titles, summaries, and page excerpts. "
+                "Each contact entry must have: name (real person, not a placeholder), title, company, source_url. "
+                "Do NOT use placeholders like 'n/v', 'unknown', or 'target_company'. "
+                "If a person's name appears in a title like 'John Smith, Head of Procurement at Acme Corp', "
+                "extract all three fields. Return an empty list only if NO real names appear anywhere in the evidence."
+            )
+
+        if task_key == "market_situation":
+            system_parts.append(
+                "For market_situation: you MUST populate these fields from the evidence: "
+                "assessment (overall market assessment paragraph), "
+                "key_trends (list of at least 3 concrete trend statements), "
+                "demand_outlook (paragraph on demand direction and why), "
+                "trend_direction ('growth', 'decline', 'stable', 'moderate growth', or 'mixed'), "
+                "growth_rate (specific figure if found, otherwise 'n/v'), "
+                "market_size (specific figure if found, otherwise 'n/v'), "
+                "overcapacity_signals (list of concrete signals from evidence), "
+                "excess_stock_indicators (paragraph if evidence exists, otherwise 'n/v'). "
+                "Extract concrete data points from the search results and page excerpts. "
+                "Only use 'n/v' if the field is genuinely absent from ALL evidence."
+            )
+
+        if task_key == "repurposing_circularity":
+            system_parts.append(
+                "For repurposing_circularity: you MUST populate repurposing_signals "
+                "(list of at least 2 concrete circularity or reuse statements from the evidence). "
+                "Also update assessment and key_trends if the evidence contains relevant market context. "
+                "Extract concrete data points. Only use 'n/v' if genuinely absent from ALL evidence."
+            )
+
+        if task_key == "analytics_operational_improvement":
+            system_parts.append(
+                "For analytics_operational_improvement: you MUST populate analytics_signals "
+                "(list of at least 2 concrete operational improvement or analytics statements from the evidence). "
+                "Also update assessment if the evidence contains relevant operational context. "
+                "Extract concrete data points. Only use 'n/v' if genuinely absent from ALL evidence."
+            )
+
+        if task_key == "peer_companies":
+            system_parts.append(
+                "For peer_companies: extract CONCRETE company names, cities, and countries "
+                "directly from the search result titles and summaries. Do NOT use generic descriptions. "
+                "Each entry in peer_competitors.companies must have a real company name found in the evidence. "
+                "If no real company names are found, return an empty list — do not fabricate names."
+            )
+
+        # Revision-request injection: make the LLM address specific gaps
+        if revision_request.get("rejected_points") or revision_request.get("feedback_to_worker"):
+            rejected = revision_request.get("rejected_points", [])
+            feedback = revision_request.get("feedback_to_worker", [])
+            revision_instructions = revision_request.get("revision_instructions", [])
+            revision_note_parts = ["You are re-running a task that was previously rejected. You MUST specifically address these gaps:"]
+            if rejected:
+                revision_note_parts.append("Rejected points: " + "; ".join(str(p) for p in rejected))
+            if feedback:
+                revision_note_parts.append("Feedback: " + "; ".join(str(f) for f in feedback))
+            if revision_instructions:
+                revision_note_parts.append("Instructions: " + "; ".join(str(i) for i in revision_instructions))
+            system_parts.append(" ".join(revision_note_parts))
+
         response = self._client_instance().chat.completions.create(
             model=str(config["structured_model"]),
             temperature=float(config["temperature"]),
@@ -346,12 +444,7 @@ class ResearchWorker:
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are a Liquisto research worker. Use only the supplied evidence. "
-                        "Never invent companies, URLs, or claims. If evidence is weak, keep outputs conservative. "
-                        "Return JSON with keys: payload_updates, facts, market_signals, buyer_hypotheses, "
-                        "open_questions, next_actions. payload_updates must only contain fields for the target section."
-                    ),
+                    "content": " ".join(system_parts),
                 },
                 {
                     "role": "user",

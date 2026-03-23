@@ -140,11 +140,11 @@
           <mxGeometry x="1200" y="496" width="240" height="90" as="geometry"/>
         </mxCell>
 
-        <mxCell id="ds_synthesis" value="&lt;b&gt;build_synthesis_from_memory()&lt;/b&gt;&lt;br&gt;liest: sections[&quot;company_profile&quot;],&lt;br&gt;&quot;industry_analysis&quot;, &quot;market_network&quot;,&lt;br&gt;quality_review, memory_snapshot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede9fe;strokeColor=#7c3aed;fontSize=12;spacing=6;fontColor=#4c1d95;" vertex="1" parent="1">
+        <mxCell id="ds_synthesis" value="&lt;b&gt;build_synthesis_from_memory()&lt;/b&gt;&lt;br&gt;liest: sections[&quot;company_profile&quot;],&lt;br&gt;&quot;industry_analysis&quot;, &quot;market_network&quot;,&lt;br&gt;&quot;contact_intelligence&quot;,&lt;br&gt;quality_review, memory_snapshot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede9fe;strokeColor=#7c3aed;fontSize=12;spacing=6;fontColor=#4c1d95;" vertex="1" parent="1">
           <mxGeometry x="1200" y="700" width="240" height="100" as="geometry"/>
         </mxCell>
 
-        <mxCell id="ds_report" value="&lt;b&gt;build_report_package()&lt;/b&gt;&lt;br&gt;liest: pipeline_data +&lt;br&gt;department_packages (alle 3)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede9fe;strokeColor=#7c3aed;fontSize=12;spacing=6;fontColor=#4c1d95;" vertex="1" parent="1">
+        <mxCell id="ds_report" value="&lt;b&gt;build_report_package()&lt;/b&gt;&lt;br&gt;liest: pipeline_data +&lt;br&gt;department_packages (alle 4)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede9fe;strokeColor=#7c3aed;fontSize=12;spacing=6;fontColor=#4c1d95;" vertex="1" parent="1">
           <mxGeometry x="1200" y="860" width="240" height="80" as="geometry"/>
         </mxCell>
 

@@ -28,7 +28,8 @@ class DepartmentRuntime:
         self.department = department
         self.lead = DepartmentLeadAgent(department)
         if search_cache is not None:
-            self.lead.worker._search_cache = search_cache
+            # Separate namespaces within the shared cache to avoid collisions
+            self.lead.worker._search_cache = search_cache.setdefault("__search__", {})
             self.lead.worker._page_cache = search_cache.setdefault("__pages__", {})
 
     def run(

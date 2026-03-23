@@ -6,7 +6,23 @@
       "Bash(python -m pytest test_pipeline.py test_preflight.py -x -q --ignore=test_startup.py -k \"not pdf and not generate_pdf and not run_pipeline\")",
       "Bash(python -m pytest test_contracts.py -v)",
       "Bash(python -m pytest test_contracts.py -q)",
-      "Bash(python -m pytest test_pipeline.py -q -k \"not generate_pdf\")"
+      "Bash(python -m pytest test_pipeline.py -q -k \"not generate_pdf\")",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pytest test_pipeline.py test_contracts.py test_optimizations.py test_preflight.py -x -q)",
+      "Bash(python -m pytest test_contracts.py test_optimizations.py test_preflight.py -x -q)",
+      "Bash(python -m pytest test_integration.py -x -q)",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/pip.exe install:*)",
+      "Bash(python -m pip install reportlab)",
+      "Bash(find d:Git-GitHubRepositories00-Liquistomulti-agent-intel-pipeline/.venv -name pip*)",
+      "Bash(cmd /c \"d:\\\\Git-GitHub\\\\Repositories\\\\00-Liquisto\\\\multi-agent-intel-pipeline\\\\.venv\\\\Scripts\\\\pip.exe install reportlab 2>&1\")",
+      "Bash(cmd /c \"d:\\\\Git-GitHub\\\\Repositories\\\\00-Liquisto\\\\multi-agent-intel-pipeline\\\\.venv\\\\Scripts\\\\pip.exe install reportlab\")",
+      "Bash(cmd /c \"d:\\\\Git-GitHub\\\\Repositories\\\\00-Liquisto\\\\multi-agent-intel-pipeline\\\\.venv\\\\Scripts\\\\python.exe -c \"\"import reportlab; print\\(reportlab.__version__\\)\"\"\")",
+      "Bash(cmd /c \"d:\\\\Git-GitHub\\\\Repositories\\\\00-Liquisto\\\\multi-agent-intel-pipeline\\\\.venv\\\\Scripts\\\\pip.exe list 2>&1 | findstr reportlab\")",
+      "Bash(.venv/Scripts/pytest test_pipeline.py test_contracts.py test_optimizations.py -x -q)",
+      "Bash(python -m pytest test_pipeline.py test_contracts.py test_optimizations.py -x -q)",
+      "Bash(python -m pytest test_contracts.py test_optimizations.py -x -q)",
+      "Bash(python -c \":*)"
     ]
   }
 }

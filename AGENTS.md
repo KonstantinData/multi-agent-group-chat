@@ -54,7 +54,7 @@ Each department is a bounded AG2 GroupChat with five `ConversableAgent` roles:
 
 Orchestration: `DepartmentRuntime` (`src/orchestration/department_runtime.py`) wraps
 `DepartmentLeadAgent` (`src/agents/lead.py`). The Lead initiates the AG2 chat,
-`GroupChatManager` with `speaker_selection_method="auto"` routes turns, and the
+`GroupChatManager` with a custom state-machine `speaker_selection_method` routes turns, and the
 chat terminates when the Lead calls `finalize_package` → `TERMINATE`.
 
 ### Supervisor ↔ Department Boundary
@@ -146,6 +146,6 @@ Each run writes to `artifacts/runs/<run_id>/`:
 
 ## Testing
 
-- Test files at repo root: `test_pipeline.py`, `test_preflight.py`, `test_startup.py`.
+- Test files at repo root: `test_pipeline.py`, `test_preflight.py`, `test_startup.py`, `test_contracts.py`, `test_optimizations.py`, `test_integration.py`.
 - Run with `.venv/bin/pytest` from repo root.
 - `preflight.py` validates environment, packages, project files, API key, import chain, and port availability.

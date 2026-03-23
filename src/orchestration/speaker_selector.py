@@ -61,6 +61,10 @@ def build_department_selector(
         name_to_role[executor_name] = "executor"
     role_to_agent = {v: agent_map[k] for k, v in name_to_role.items()}
 
+    # Track consecutive text-only turns per role to detect loops
+    run_state.setdefault("_consecutive_text_turns", {})
+    _MAX_TEXT_TURNS = 2  # max text-only turns before forcing back to Lead
+
     def _selector(
         last_speaker: ConversableAgent,
         groupchat,
@@ -73,6 +77,8 @@ def build_department_selector(
             last_content = str(last_msg.get("content", ""))
             # If the last message contains tool_calls, route to executor
             if last_msg.get("tool_calls") and "executor" in role_to_agent:
+                # Reset text-turn counter on tool call
+                run_state["_consecutive_text_turns"][last_role] = 0
                 return role_to_agent["executor"]
             # If executor just ran a tool, route back to the caller's
             # next step based on the workflow state machine
@@ -96,6 +102,20 @@ def build_department_selector(
                     return role_to_agent["lead"]
                 # decide step: supervisor revision or finalize executed
                 return role_to_agent["lead"]
+
+        # Track consecutive text-only turns (no tool_call)
+        if last_role != "executor":
+            count = run_state["_consecutive_text_turns"].get(last_role, 0) + 1
+            run_state["_consecutive_text_turns"][last_role] = count
+            if count >= _MAX_TEXT_TURNS and last_role in ("researcher", "critic", "judge", "coding"):
+                # Agent is looping without calling its tool → return to Lead
+                run_state["_consecutive_text_turns"][last_role] = 0
+                run_state["workflow_step"] = "decide"
+                return role_to_agent["lead"]
+        # Reset counter for other roles when they get a turn
+        for r in name_to_role.values():
+            if r != last_role and r != "executor":
+                run_state["_consecutive_text_turns"][r] = 0
 
         # Determine next step based on current step + who just spoke
         if step == "start":

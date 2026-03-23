@@ -176,6 +176,7 @@ def run_pipeline(
                 company_profile=sections.get("company_profile", {}),
                 industry_analysis=sections.get("industry_analysis", {}),
                 market_network=sections.get("market_network", {}),
+                contact_intelligence=sections.get("contact_intelligence", {}),
                 quality_review=quality_review,
                 memory_snapshot=run_context.short_term_memory.snapshot(),
             )
@@ -185,6 +186,7 @@ def run_pipeline(
             company_profile=sections.get("company_profile", {}),
             industry_analysis=sections.get("industry_analysis", {}),
             market_network=sections.get("market_network", {}),
+            contact_intelligence=sections.get("contact_intelligence", {}),
             quality_review=quality_review,
         )
         pipeline_data = validate_pipeline_data(
@@ -213,7 +215,12 @@ def run_pipeline(
             )
         )
 
-        status = "completed" if readiness["usable"] else "completed_but_not_usable"
+        if readiness["usable"]:
+            status = "completed"
+        elif readiness.get("partial"):
+            status = "completed_partial"
+        else:
+            status = "completed_but_not_usable"
         run_context.status = status
         elapsed_seconds = round(perf_counter() - start_time, 3)
         memory_snapshot = run_context.short_term_memory.snapshot()

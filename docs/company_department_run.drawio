@@ -8,7 +8,7 @@
         <mxCell id="title" value="Company Department Run" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#0f172a;" vertex="1" parent="1">
           <mxGeometry x="40" y="24" width="420" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="Real AG2 GroupChat inside the Company Department — ConversableAgents with registered tools, GroupChatManager (speaker_selection=auto), Lead-initiated" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontColor=#475569;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="Real AG2 GroupChat inside the Company Department — ConversableAgents with registered tools, GroupChatManager (custom state-machine speaker selector), Lead-initiated" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=12;fontColor=#475569;" vertex="1" parent="1">
           <mxGeometry x="40" y="58" width="1200" height="20" as="geometry" />
         </mxCell>
 
@@ -55,7 +55,7 @@
           <mxGeometry x="410" y="208" width="660" height="18" as="geometry" />
         </mxCell>
 
-        <mxCell id="lead" value="&lt;b&gt;Company Lead / Analyst&lt;/b&gt;&lt;br&gt;translates the brief into an investigation plan, steers the domain work, and owns the domain package" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#16a34a;fontSize=13;spacing=8;fontColor=#14532d;" vertex="1" parent="1">
+        <mxCell id="lead" value="&lt;b&gt;Company Lead / Analyst&lt;/b&gt;&lt;br&gt;translates the brief into an investigation plan, classifies goods (made vs distributed vs held-in-stock), steers the domain work, and owns the domain package" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#16a34a;fontSize=13;spacing=8;fontColor=#14532d;" vertex="1" parent="1">
           <mxGeometry x="430" y="250" width="300" height="120" as="geometry" />
         </mxCell>
         <mxCell id="researchers" value="&lt;b&gt;Researchers&lt;/b&gt;&lt;br&gt;search, analyze, and assess sources for company profile, economic situation, and product/material relevance" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#16a34a;fontSize=13;spacing=8;fontColor=#14532d;" vertex="1" parent="1">
@@ -64,7 +64,7 @@
         <mxCell id="critic" value="&lt;b&gt;Critic&lt;/b&gt;&lt;br&gt;checks whether the supervisor's questions were answered with domain rigor and whether uncertainties are clearly stated" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fef9c3;strokeColor=#ca8a04;fontSize=13;spacing=8;fontColor=#713f12;" vertex="1" parent="1">
           <mxGeometry x="430" y="610" width="300" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="autogen_hub" value="&lt;b&gt;GroupChatManager&lt;/b&gt;&lt;br&gt;speaker_selection_method=&quot;auto&quot;&lt;br&gt;Decides who speaks next based on&lt;br&gt;the Lead&apos;s explicit addressing." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ecfeff;strokeColor=#0891b2;fontSize=12;spacing=8;fontColor=#155e75;" vertex="1" parent="1">
+        <mxCell id="autogen_hub" value="&lt;b&gt;GroupChatManager&lt;/b&gt;&lt;br&gt;custom state-machine speaker selector&lt;br&gt;Routes turns based on workflow phase&lt;br&gt;and tool-call state." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ecfeff;strokeColor=#0891b2;fontSize=12;spacing=8;fontColor=#155e75;" vertex="1" parent="1">
           <mxGeometry x="790" y="430" width="270" height="120" as="geometry" />
         </mxCell>
         <mxCell id="judge" value="&lt;b&gt;Judge&lt;/b&gt;&lt;br&gt;decides edge cases in disputed assessments" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fef9c3;strokeColor=#ca8a04;fontSize=12;spacing=8;fontColor=#713f12;" vertex="1" parent="1">

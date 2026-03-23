@@ -183,7 +183,9 @@ class DepartmentLeadAgent:
         assignments: list[Assignment],
     ) -> dict[str, Any]:
         """Translate the supervisor brief into a structured domain investigation plan."""
-        product_keywords = extract_product_keywords(brief.raw_homepage_excerpt)
+        product_keywords = extract_product_keywords(
+            brief.raw_homepage_excerpt, company_name=brief.company_name,
+        )
         industry_hint = infer_industry(
             brief.page_title, brief.meta_description, brief.raw_homepage_excerpt
         )
@@ -309,6 +311,20 @@ class DepartmentLeadAgent:
             assignment = next((a for a in assignments if a.task_key == task_key), None)
             if not assignment:
                 return json.dumps({"error": f"Unknown task_key: {task_key}"})
+            # Prevent duplicate execution: if task already has a result and
+            # no revision was requested, skip the redundant run
+            if task_key in run_state["task_results"] and task_key not in run_state["revision_requests"]:
+                existing = run_state["task_results"][task_key]
+                return json.dumps(
+                    {
+                        "task_key": task_key,
+                        "status": "already_completed",
+                        "facts": existing.get("facts", [])[:5],
+                        "open_questions": existing.get("open_questions", [])[:3],
+                        "payload_keys": list(existing.get("payload", {}).keys()),
+                    },
+                    ensure_ascii=False,
+                )
             try:
                 report = self.worker.run(
                     brief=brief,
@@ -328,6 +344,7 @@ class DepartmentLeadAgent:
                 return json.dumps({"error": f"run_research failed: {exc}", "task_key": task_key})
             run_state["current_payload"] = dict(report["payload"])
             run_state["task_results"][task_key] = report
+            run_state["revision_requests"].pop(task_key, None)  # consumed
             run_state["workflow_step"] = "review"  # advance state-machine
             if memory_store is not None:
                 memory_store.ingest_worker_report(report, department=self.department)
@@ -533,6 +550,12 @@ class DepartmentLeadAgent:
                 confidence = "medium"
             else:
                 confidence = "low"
+
+            # Lead-owned: classify goods for CompanyDepartment (Drawio: "classifies goods")
+            if self.department == "CompanyDepartment":
+                run_state["current_payload"]["goods_classification"] = self._classify_goods(
+                    run_state["current_payload"]
+                )
 
             report_segment = DomainReportSegment(
                 department=self.department,
@@ -986,6 +1009,44 @@ Your query suggestions will be used by {self.researcher_name} on the next resear
     # ------------------------------------------------------------------
     # Investigation plan helpers
     # ------------------------------------------------------------------
+
+    def _classify_goods(self, payload: dict[str, Any]) -> str:
+        """Classify company goods as made/distributed/held_in_stock/mixed/unclear.
+
+        Applies the made_vs_distributed_vs_held_in_stock classification frame.
+        The Lead owns this classification; the Worker supplies the raw evidence.
+        """
+        scope_texts = payload.get("product_asset_scope", [])
+        services_texts = payload.get("products_and_services", [])
+        description = str(payload.get("description", ""))
+        all_text = " ".join(
+            [description]
+            + [str(s) for s in scope_texts]
+            + [str(s) for s in services_texts]
+        ).lower()
+
+        made_signals = any(kw in all_text for kw in (
+            "manufactur", "produc", "assembl", " made ", "fabricat", "machining",
+        ))
+        distributed_signals = any(kw in all_text for kw in (
+            "distribut", "wholesal", "trading", "trade", "resell", "import", "export",
+        ))
+        stock_signals = any(kw in all_text for kw in (
+            "held-in-stock", "held in stock", "inventory", "excess stock", "surplus",
+            "warehouse", "overstock", "stock",
+        ))
+
+        active = [label for flag, label in [
+            (made_signals, "manufacturer"),
+            (distributed_signals, "distributor"),
+            (stock_signals, "held_in_stock"),
+        ] if flag]
+
+        if len(active) == 1:
+            return active[0]
+        if len(active) > 1:
+            return "mixed"
+        return "unclear"
 
     def _domain_hypothesis(
         self,

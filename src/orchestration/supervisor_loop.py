@@ -225,8 +225,18 @@ def run_supervisor_loop(
         # Enrich current_section with upstream data when available
         current_section = sections.get(department_assignment.target_section, {})
         if department_name == "ContactDepartment":
-            buyer_package = department_packages.get("BuyerDepartment", {})
-            buyer_candidates = buyer_package.get("accepted_points", [])
+            market_payload = sections.get("market_network", {})
+            # Extract real company names from typed company lists (peer + downstream)
+            buyer_candidates: list[str] = []
+            for tier_key in ("peer_competitors", "downstream_buyers"):
+                for company in market_payload.get(tier_key, {}).get("companies", []):
+                    name = ""
+                    if isinstance(company, dict):
+                        name = str(company.get("name") or "").strip()
+                    elif isinstance(company, str):
+                        name = company.strip()
+                    if name and name not in {"n/v", "n/a"} and name not in buyer_candidates:
+                        buyer_candidates.append(name)
             if buyer_candidates:
                 current_section = {**current_section, "buyer_candidates": buyer_candidates}
 
@@ -323,6 +333,7 @@ def run_supervisor_loop(
             company_profile=sections.get("company_profile", {}),
             industry_analysis=sections.get("industry_analysis", {}),
             market_network=sections.get("market_network", {}),
+            contact_intelligence=sections.get("contact_intelligence", {}),
             quality_review=quality_review,
             memory_snapshot=run_context.short_term_memory.snapshot(),
         )

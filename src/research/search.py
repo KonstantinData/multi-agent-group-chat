@@ -88,6 +88,13 @@ def build_buyer_queries(company_name: str, product_keywords: list[str], industry
         queries.append(f"{joined_keywords} spare parts buyers")
     if industry_hint and industry_hint != "n/v":
         queries.append(f"{industry_hint} peer companies buyers")
+        if not joined_keywords:
+            queries.append(f"{industry_hint} distributors aftermarket buyers")
     queries.append(f"\"{company_name}\" customers")
+    if not joined_keywords:
+        # No product keywords — add company-name-based peer/buyer queries as fallback
+        queries.append(f"\"{company_name}\" competitors peer companies")
+        if not industry_hint or industry_hint == "n/v":
+            queries.append(f"\"{company_name}\" distributors buyers aftermarket")
     return queries
 

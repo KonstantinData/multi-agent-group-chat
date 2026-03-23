@@ -46,7 +46,7 @@ Four domain departments, each implemented as a bounded AG2 GroupChat:
 
 | Department | Scope |
 |------------|-------|
-| Company Department | Company fundamentals, economic/commercial situation, product and asset scope |
+| Company Department | Company fundamentals, economic/commercial situation, product and asset scope. The CompanyLead owns the goods classification (made vs distributed vs held-in-stock) as a domain judgment |
 | Market Department | Market situation, repurposing/circularity, analytics and operational improvement signals |
 | Buyer Department | Peer companies, monetization and redeployment paths |
 | Contact Department | Contact discovery and qualification at prioritized buyer firms |
@@ -60,6 +60,9 @@ Each department group contains:
 | Critic | gpt-4.1 | `review_research` |
 | Judge (optional) | gpt-4.1 | `judge_decision` |
 | Coding Specialist (optional) | gpt-4.1-mini | `suggest_refined_queries` |
+
+Turn routing uses a custom state-machine speaker selector based on workflow
+phase and tool-call state.
 
 ### Synthesis Plane
 

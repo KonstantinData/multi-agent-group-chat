@@ -195,7 +195,7 @@ tasks). `output_schema_key` needs a dedicated model per task.
 - [X] Create `ContactDiscoveryResult` sub-schema from `ContactIntelligenceSection`
 - [X] Create `ContactQualificationResult` sub-schema from `ContactIntelligenceSection`
 
-- [~] Define assembly convention: how sub-schemas merge into section-level models for `PipelineData` — documented in registry.py header; runtime merge not yet automated (follow-up)
+- [X] Define assembly convention: how sub-schemas merge into section-level models for `PipelineData` — `SECTION_MODEL_MAP` + `assemble_section()` in `registry.py`; `pipeline_runner.py` calls `assemble_section()` for all 4 department sections before `validate_pipeline_data()`
 
 ### Schema Registry
 

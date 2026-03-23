@@ -367,7 +367,91 @@ def test_synthesis_fallback_confidence_not_forced_low():
 
 
 # ---------------------------------------------------------------------------
-# 6. Legacy "conservative" regression test
+# 6. Section assembly tests
+# ---------------------------------------------------------------------------
+
+def test_assemble_section_company_profile():
+    from src.models.registry import assemble_section
+    raw = {
+        "company_name": "ACME GmbH",
+        "website": "acme.de",
+        "industry": "Manufacturing",
+        "products_and_services": ["widgets"],
+        "product_asset_scope": ["steel parts"],
+        "economic_situation": {"assessment": "Stable", "revenue_trend": "flat"},
+    }
+    result = assemble_section("company_profile", raw)
+    assert result["company_name"] == "ACME GmbH"
+    assert result["economic_situation"]["assessment"] == "Stable"
+    # Pydantic fills defaults for missing fields
+    assert "legal_form" in result
+    assert "key_people" in result
+
+
+def test_assemble_section_industry_analysis():
+    from src.models.registry import assemble_section
+    raw = {
+        "industry_name": "Automotive",
+        "assessment": "Declining",
+        "key_trends": ["EV shift"],
+        "repurposing_signals": ["battery reuse"],
+        "analytics_signals": ["planning gap"],
+    }
+    result = assemble_section("industry_analysis", raw)
+    assert result["industry_name"] == "Automotive"
+    assert result["repurposing_signals"] == ["battery reuse"]
+    assert "overcapacity_signals" in result
+
+
+def test_assemble_section_market_network():
+    from src.models.registry import assemble_section
+    raw = {
+        "target_company": "ACME",
+        "peer_competitors": {"companies": [{"name": "Peer1"}], "assessment": "close"},
+        "downstream_buyers": {"companies": [], "assessment": "n/v"},
+        "monetization_paths": ["resale"],
+    }
+    result = assemble_section("market_network", raw)
+    assert result["target_company"] == "ACME"
+    assert len(result["peer_competitors"]["companies"]) == 1
+    assert "service_providers" in result
+
+
+def test_assemble_section_contact_intelligence():
+    from src.models.registry import assemble_section
+    raw = {
+        "contacts": [{"name": "Jane Doe", "firma": "BuyerCo"}],
+        "firms_searched": 3,
+        "contacts_found": 1,
+    }
+    result = assemble_section("contact_intelligence", raw)
+    assert result["contacts_found"] == 1
+    assert result["contacts"][0]["name"] == "Jane Doe"
+    assert "prioritized_contacts" in result
+
+
+def test_assemble_section_unknown_returns_raw():
+    from src.models.registry import assemble_section
+    raw = {"custom_key": "value"}
+    result = assemble_section("synthesis", raw)
+    assert result == raw
+
+
+def test_assemble_section_empty_payload_returns_defaults():
+    from src.models.registry import assemble_section
+    result = assemble_section("company_profile", {})
+    assert result["company_name"] == "n/v"
+    assert result["products_and_services"] == []
+
+
+def test_section_model_map_covers_all_department_sections():
+    from src.models.registry import SECTION_MODEL_MAP
+    expected = {"company_profile", "industry_analysis", "market_network", "contact_intelligence"}
+    assert set(SECTION_MODEL_MAP.keys()) == expected
+
+
+# ---------------------------------------------------------------------------
+# 7. Legacy "conservative" regression test
 # ---------------------------------------------------------------------------
 
 def test_no_conservative_status_in_use_cases():

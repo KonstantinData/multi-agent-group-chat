@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest test_contracts.py -x -q)",
+      "Bash(python -m pytest test_pipeline.py test_preflight.py -x -q --ignore=test_startup.py)",
+      "Bash(python -m pytest test_pipeline.py test_preflight.py -x -q --ignore=test_startup.py -k \"not pdf and not generate_pdf and not run_pipeline\")",
+      "Bash(python -m pytest test_contracts.py -v)",
+      "Bash(python -m pytest test_contracts.py -q)",
+      "Bash(python -m pytest test_pipeline.py -q -k \"not generate_pdf\")"
+    ]
+  }
+}

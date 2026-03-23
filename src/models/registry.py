@@ -1,4 +1,4 @@
-"""Task-specific sub-schemas and the central SCHEMA_REGISTRY.
+"""Task-specific sub-schemas, central SCHEMA_REGISTRY, and section assembly.
 
 Each task in STANDARD_TASK_BACKLOG has an ``output_schema_key`` that maps to a
 Pydantic model here.  All runtime code that needs to validate or instantiate a
@@ -9,9 +9,8 @@ Assembly convention
 -------------------
 Task-level sub-schemas are narrow slices of the broader section-level models
 (CompanyProfile, IndustryAnalysis, MarketNetwork, ContactIntelligenceSection).
-After task execution they are merged back into those section-level models for
-PipelineData assembly.  The sub-schemas exist only to give ``output_schema_key``
-a real type contract.
+``assemble_section()`` merges raw payload dicts into validated section-level
+Pydantic models for PipelineData assembly.
 """
 from __future__ import annotations
 
@@ -20,9 +19,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.models.schemas import (
+    CompanyProfile,
     CompanyRecord,
+    ContactIntelligenceSection,
     ContactPerson,
     EconomicSituation,
+    IndustryAnalysis,
+    MarketNetwork,
     MarketTier,
     SourceRecord,
 )
@@ -184,3 +187,28 @@ def resolve_output_schema(schema_key: str) -> type[BaseModel]:
             f"output_schema_key '{schema_key}' is not in SCHEMA_REGISTRY. "
             f"Registered keys: {registered}"
         ) from None
+
+
+# ---------------------------------------------------------------------------
+# Section assembly — typed merge of sub-schema payloads into section models
+# ---------------------------------------------------------------------------
+
+# Maps target_section name → section-level Pydantic model
+SECTION_MODEL_MAP: dict[str, type[BaseModel]] = {
+    "company_profile": CompanyProfile,
+    "industry_analysis": IndustryAnalysis,
+    "market_network": MarketNetwork,
+    "contact_intelligence": ContactIntelligenceSection,
+}
+
+
+def assemble_section(target_section: str, raw_payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a raw section payload against its section-level Pydantic model.
+
+    Returns a clean dict produced by ``model.model_dump(mode="json")``.
+    If ``target_section`` has no registered model, returns ``raw_payload`` as-is.
+    """
+    model_cls = SECTION_MODEL_MAP.get(target_section)
+    if model_cls is None:
+        return dict(raw_payload)
+    return model_cls.model_validate(raw_payload).model_dump(mode="json")

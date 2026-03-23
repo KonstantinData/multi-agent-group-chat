@@ -15,6 +15,7 @@ from src.memory.consolidation import consolidate_role_patterns
 from src.memory.long_term_store import FileLongTermMemoryStore
 from src.memory.policies import should_store_strategy
 from src.memory.retrieval import retrieve_strategies
+from src.models.registry import assemble_section
 from src.models.schemas import empty_pipeline_data, validate_pipeline_data
 from src.orchestration.run_context import RunContext
 from src.orchestration.supervisor_loop import emit_message, run_supervisor_loop
@@ -188,10 +189,10 @@ def run_pipeline(
         )
         pipeline_data = validate_pipeline_data(
             {
-                "company_profile": sections.get("company_profile", {}),
-                "industry_analysis": sections.get("industry_analysis", {}),
-                "market_network": sections.get("market_network", {}),
-                "contact_intelligence": sections.get("contact_intelligence", {}),
+                "company_profile": assemble_section("company_profile", sections.get("company_profile", {})),
+                "industry_analysis": assemble_section("industry_analysis", sections.get("industry_analysis", {})),
+                "market_network": assemble_section("market_network", sections.get("market_network", {})),
+                "contact_intelligence": assemble_section("contact_intelligence", sections.get("contact_intelligence", {})),
                 "quality_review": quality_review,
                 "synthesis": synthesis,
                 "research_readiness": readiness,

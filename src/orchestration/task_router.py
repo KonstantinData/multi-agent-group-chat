@@ -54,7 +54,7 @@ def build_initial_assignments(brief: SupervisorBrief) -> list[Assignment]:
                 label=str(item["label"]),
                 objective=str(item["objective_template"]).format(
                     company_name=brief.company_name,
-                    industry_hint=brief.company_name,
+                    industry_hint=brief.industry_hint if brief.industry_hint != "n/v" else brief.company_name,
                 ),
                 model_name=structured_model if "llm_structured" in allowed_tools else chat_model,
                 allowed_tools=allowed_tools,

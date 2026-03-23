@@ -103,13 +103,31 @@ def run_supervisor_loop(
             )
         )
 
-        # Pass buyer package as context for Contact Intelligence
+        # Evaluate run_condition for Contact department
+        # contact_discovery: run only when BuyerDepartment produced prioritized firms
+        # contact_qualification: run only after contact_discovery completes with contacts
+        # Both are modelled as a single department-level gate here; intra-department
+        # ordering is left to the Lead agent.
         current_section = sections.get(department_assignment.target_section, {})
         if department_name == "ContactDepartment":
             buyer_package = department_packages.get("BuyerDepartment", {})
             buyer_candidates = buyer_package.get("accepted_points", [])
-            if buyer_candidates:
-                current_section = {**current_section, "buyer_candidates": buyer_candidates}
+            if not buyer_candidates:
+                # run_condition "buyer_department_has_prioritized_firms" not met
+                # Mark all Contact tasks as skipped — no execution, no artifact
+                for da in department_assignment.assignments:
+                    run_context.update_task_status(task_key=da.task_key, status="skipped")
+                    run_context.short_term_memory.task_statuses[da.task_key] = "skipped"
+                    completed_backlog.append(
+                        {
+                            "task_key": da.task_key,
+                            "label": da.label,
+                            "target_section": da.target_section,
+                            "status": "skipped",
+                        }
+                    )
+                continue
+            current_section = {**current_section, "buyer_candidates": buyer_candidates}
 
         department_runtime = agents["departments"][department_name]
         section_payload, department_messages, package = department_runtime.run(
@@ -146,7 +164,7 @@ def run_supervisor_loop(
 
         status_by_task = {task["task_key"]: task["status"] for task in package.get("completed_tasks", [])}
         for assignment in department_assignment.assignments:
-            task_status = status_by_task.get(assignment.task_key, "conservative")
+            task_status = status_by_task.get(assignment.task_key, "degraded")
             run_context.update_task_status(task_key=assignment.task_key, status=task_status)
             run_context.short_term_memory.task_statuses[assignment.task_key] = task_status
             completed_backlog.append(

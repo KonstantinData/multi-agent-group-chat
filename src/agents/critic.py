@@ -1,62 +1,88 @@
-"""Critic agent implementation."""
+"""Critic agent — generic deterministic rule evaluator.
+
+Reads validation_rules from the task contract (use_cases.py) so there is
+one canonical source of truth.  No LLM is used here.
+
+Rule check types
+----------------
+non_placeholder  — field value must not be "n/v" and must not be empty/None
+min_items        — field must be a sequence with at least ``value`` items
+min_length       — field must be a string with at least ``value`` characters
+
+Dot-notation field paths (e.g. "economic_situation.assessment") are resolved
+by walking the payload dict level by level.
+
+Output structure
+----------------
+The review result exposes per-class pass/fail counts so the Judge can make a
+class-aware three-outcome decision without re-reading the payload.
+"""
 from __future__ import annotations
 
 from typing import Any
 
+from src.app.use_cases import get_task_validation_rules
 from src.config import get_role_model_selection
 from src.orchestration.tool_policy import resolve_allowed_tools
 
 
-TASK_POINT_RULES: dict[str, list[tuple[str, callable]]] = {
-    "company_fundamentals": [
-        ("verified_identity", lambda payload: payload.get("company_name", "n/v") != "n/v"),
-        ("website_match", lambda payload: payload.get("website", "n/v") != "n/v"),
-        ("industry_classification", lambda payload: payload.get("industry", "n/v") != "n/v"),
-        (
-            "offer_or_business_description",
-            lambda payload: bool(payload.get("description", "").strip()) or bool(payload.get("products_and_services")),
-        ),
-    ],
-    "economic_commercial_situation": [
-        ("economic_assessment", lambda payload: payload.get("economic_situation", {}).get("assessment", "n/v") != "n/v"),
-        ("commercial_signals", lambda payload: bool(payload.get("economic_situation", {}).get("recent_events")) or bool(payload.get("economic_situation", {}).get("inventory_signals"))),
-    ],
-    "market_situation": [
-        ("industry_name", lambda payload: payload.get("industry_name", "n/v") != "n/v"),
-        ("market_assessment", lambda payload: payload.get("assessment", "n/v") != "n/v"),
-        (
-            "market_signals",
-            lambda payload: bool(payload.get("key_trends")) or payload.get("demand_outlook", "n/v") != "n/v",
-        ),
-    ],
-    "peer_companies": [
-        ("target_company", lambda payload: payload.get("target_company", "n/v") != "n/v"),
-        (
-            "peer_landscape",
-            lambda payload: bool(payload.get("peer_competitors", {}).get("companies"))
-            or "no " in str(payload.get("peer_competitors", {}).get("assessment", "")).lower(),
-        ),
-    ],
-    "product_asset_scope": [
-        ("product_asset_scope", lambda payload: bool(payload.get("product_asset_scope"))),
-    ],
-    "monetization_redeployment": [
-        (
-            "buyer_or_path_signal",
-            lambda payload: bool(payload.get("downstream_buyers", {}).get("companies"))
-            or bool(payload.get("monetization_paths"))
-            or bool(payload.get("redeployment_paths")),
-        ),
-        ("target_company", lambda payload: payload.get("target_company", "n/v") != "n/v"),
-    ],
-    "repurposing_circularity": [
-        ("repurposing_signal", lambda payload: bool(payload.get("repurposing_signals"))),
-    ],
-    "analytics_operational_improvement": [
-        ("analytics_signal", lambda payload: bool(payload.get("analytics_signals"))),
-    ],
-}
+# ---------------------------------------------------------------------------
+# Generic check evaluators
+# ---------------------------------------------------------------------------
 
+def _resolve_field(payload: dict[str, Any], field_path: str) -> Any:
+    """Walk a dot-separated path into a nested dict.  Returns None on miss."""
+    value: Any = payload
+    for part in field_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def _check_non_placeholder(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        stripped = value.strip()
+        return bool(stripped) and stripped != "n/v"
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
+
+
+def _check_min_items(value: Any, threshold: int) -> bool:
+    if not isinstance(value, (list, tuple)):
+        return False
+    return len(value) >= threshold
+
+
+def _check_min_length(value: Any, threshold: int) -> bool:
+    if not isinstance(value, str):
+        return False
+    return len(value.strip()) >= threshold
+
+
+def _evaluate_rule(rule: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Return True if the rule passes for the given payload."""
+    check = rule.get("check", "")
+    field = rule.get("field", "")
+    value = _resolve_field(payload, field)
+    threshold = rule.get("value", 1)
+
+    if check == "non_placeholder":
+        return _check_non_placeholder(value)
+    if check == "min_items":
+        return _check_min_items(value, threshold)
+    if check == "min_length":
+        return _check_min_length(value, threshold)
+    # Unknown check type — fail safe
+    return False
+
+
+# ---------------------------------------------------------------------------
+# CriticAgent
+# ---------------------------------------------------------------------------
 
 class CriticAgent:
     def __init__(self, name: str = "CompanyCritic") -> None:
@@ -70,34 +96,65 @@ class CriticAgent:
         task_key: str,
         section: str,
         objective: str,
-        payload: dict,
+        payload: dict[str, Any],
         report: dict[str, Any] | None = None,
         role_memory: list[dict[str, Any]] | None = None,
-    ) -> dict:
-        rules = TASK_POINT_RULES.get(task_key, [])
+        validation_rules: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate payload against validation_rules from the task contract.
+
+        If ``validation_rules`` is supplied explicitly it takes priority;
+        otherwise the rules are looked up from the canonical task contract by
+        ``task_key``.  This allows callers in tests or special paths to inject
+        rules directly.
+        """
+        rules = validation_rules if validation_rules is not None else get_task_validation_rules(task_key)
+
         accepted_points: list[str] = []
         rejected_points: list[str] = []
         missing_points: list[str] = []
         issues: list[str] = []
+        core_passed: int = 0
+        core_total: int = 0
+        supporting_passed: int = 0
+        supporting_total: int = 0
+        failed_rule_messages: list[str] = []
 
-        for point_name, predicate in rules:
+        for rule in rules:
+            rule_name = rule.get("field", rule.get("check", "unknown"))
+            rule_class = rule.get("class", "supporting")
             try:
-                satisfied = bool(predicate(payload))
+                passed = _evaluate_rule(rule, payload)
             except Exception:
-                satisfied = False
-            if satisfied:
-                accepted_points.append(point_name)
-            else:
-                rejected_points.append(point_name)
-                missing_points.append(point_name)
-                issues.append(f"Point '{point_name}' is still insufficient for {task_key}.")
+                passed = False
 
+            if rule_class == "core":
+                core_total += 1
+                if passed:
+                    core_passed += 1
+            else:
+                supporting_total += 1
+                if passed:
+                    supporting_passed += 1
+
+            if passed:
+                accepted_points.append(rule_name)
+            else:
+                rejected_points.append(rule_name)
+                missing_points.append(rule_name)
+                failure_msg = rule.get("message", f"Rule '{rule_name}' not satisfied for {task_key}.")
+                issues.append(failure_msg)
+                if rule_class == "core":
+                    failed_rule_messages.append(failure_msg)
+
+        # Source quality check (always supporting)
         sources = payload.get("sources", []) if isinstance(payload, dict) else []
         if not sources:
             issues.append("No supporting source recorded.")
             missing_points.append("supporting_sources")
         external_sources = [
-            source for source in sources if isinstance(source, dict) and source.get("source_type") not in {"owned", "first_party"}
+            s for s in sources
+            if isinstance(s, dict) and s.get("source_type") not in {"owned", "first_party"}
         ]
         evidence_strength = "strong" if len(external_sources) >= 2 else "moderate" if sources else "weak"
 
@@ -108,19 +165,19 @@ class CriticAgent:
             if rejected_points and search_calls and not external_sources and queries_used:
                 method_issue = True
 
+        # Legacy approved flag — True only when all rules pass and evidence is present
         approved = bool(rules) and not rejected_points and evidence_strength != "weak"
         if not rules:
             approved = not issues
 
-        feedback_to_worker = []
-        for point_name in rejected_points:
-            feedback_to_worker.append(
-                {
-                    "point": point_name,
-                    "status": "revise",
-                    "guidance": f"Rework the missing or weak point '{point_name}' so it directly satisfies the task objective.",
-                }
-            )
+        feedback_to_worker = [
+            {
+                "point": rp,
+                "status": "revise",
+                "guidance": f"Rework the missing or weak point '{rp}' so it directly satisfies the task objective.",
+            }
+            for rp in rejected_points
+        ]
 
         coding_brief = {
             "task_key": task_key,
@@ -144,13 +201,18 @@ class CriticAgent:
             "missing_points": list(dict.fromkeys(missing_points)),
             "evidence_strength": evidence_strength,
             "method_issue": method_issue,
+            # Class-aware counts for the Judge
+            "core_passed": core_passed,
+            "core_total": core_total,
+            "supporting_passed": supporting_passed,
+            "supporting_total": supporting_total,
+            # Failed core rule messages become open_questions on degraded output
+            "failed_rule_messages": failed_rule_messages,
             "revision_instructions": [
                 "Keep already accepted points stable.",
                 "Revise only the rejected or missing points.",
                 "Downgrade unsupported claims if stronger evidence cannot be found.",
-            ]
-            if issues
-            else [],
+            ] if issues else [],
             "feedback_to_worker": feedback_to_worker,
             "coding_brief": coding_brief,
             "field_issues": [],

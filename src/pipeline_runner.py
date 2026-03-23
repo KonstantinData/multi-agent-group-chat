@@ -22,7 +22,7 @@ from src.orchestration.synthesis import (
     assess_research_readiness,
     build_quality_review,
     build_report_package,
-    build_synthesis_from_memory,
+    build_synthesis_context,
 )
 from src.research.normalize import normalize_domain
 
@@ -158,20 +158,27 @@ def run_pipeline(
             )
         )
 
-        # Synthesis now comes from SynthesisDepartment AG2 run (in supervisor_loop)
-        synthesis_result = sections.get("synthesis", {})
-        # Build legacy synthesis shape for pipeline_data compatibility
-        synthesis = build_synthesis_from_memory(
-            company_profile=sections.get("company_profile", {}),
-            industry_analysis=sections.get("industry_analysis", {}),
-            market_network=sections.get("market_network", {}),
-            quality_review=quality_review,
-            memory_snapshot=run_context.short_term_memory.snapshot(),
-        )
-        # Enrich with AG2 synthesis output where available
-        if synthesis_result:
-            synthesis["executive_summary"] = synthesis_result.get("executive_summary", synthesis.get("executive_summary", "n/v"))
-            synthesis["opportunity_assessment_summary"] = synthesis_result.get("opportunity_assessment", synthesis.get("opportunity_assessment_summary", "n/v"))
+        # Single authoritative synthesis path — AG2 SynthesisDepartment is the author.
+        # build_synthesis_context() prepares a fallback payload only; it is used when
+        # AG2 did not complete (generation_mode="fallback").  Confidence is derived
+        # from input package quality, not from the generation mode.
+        ag2_synthesis = sections.get("synthesis")
+        if ag2_synthesis and ag2_synthesis.get("target_company", "n/v") != "n/v":
+            evidence_health = quality_review.get("evidence_health", "low")
+            synthesis = {
+                **ag2_synthesis,
+                "generation_mode": "normal",
+                "confidence": evidence_health,
+            }
+        else:
+            synthesis_ctx = build_synthesis_context(
+                company_profile=sections.get("company_profile", {}),
+                industry_analysis=sections.get("industry_analysis", {}),
+                market_network=sections.get("market_network", {}),
+                quality_review=quality_review,
+                memory_snapshot=run_context.short_term_memory.snapshot(),
+            )
+            synthesis = {**synthesis_ctx, "generation_mode": "fallback"}
 
         readiness = assess_research_readiness(
             company_profile=sections.get("company_profile", {}),

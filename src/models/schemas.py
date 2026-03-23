@@ -1,9 +1,22 @@
 """Pydantic schemas for the supervisor-centric pipeline."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field
+
+# ---------------------------------------------------------------------------
+# Canonical vocabulary — single source of truth for status/confidence/mode
+# ---------------------------------------------------------------------------
+
+# Task lifecycle status (set by router for skipped, by Judge for others)
+TaskStatus = Literal["accepted", "degraded", "skipped", "rejected", "pending"]
+
+# Evidence confidence level (applies to packages and synthesis)
+ConfidenceLevel = Literal["high", "medium", "low"]
+
+# Synthesis generation mode (orthogonal to confidence)
+GenerationMode = Literal["normal", "fallback"]
 
 
 class SourceRecord(BaseModel):
@@ -175,6 +188,9 @@ class Synthesis(BaseModel):
     key_risks: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     sources: list[SourceRecord] = Field(default_factory=list)
+    # Tracks how this synthesis was produced (orthogonal to confidence)
+    generation_mode: str = "normal"
+    confidence: str = "medium"
 
 
 class ResearchReadiness(BaseModel):
@@ -192,6 +208,7 @@ class ValidationErrorRecord(BaseModel):
 class DepartmentTaskResult(BaseModel):
     task_key: str = "n/v"
     label: str = "n/v"
+    # Valid values: accepted | degraded | skipped | rejected | pending
     status: str = "pending"
     accepted_points: list[str] = Field(default_factory=list)
     open_points: list[str] = Field(default_factory=list)
@@ -210,6 +227,8 @@ class DepartmentPackage(BaseModel):
     sources: list[SourceRecord] = Field(default_factory=list)
     autogen_group: dict[str, Any] = Field(default_factory=dict)
     report_segment: DomainReportSegment = Field(default_factory=DomainReportSegment)
+    # Derived from Judge outcomes across completed_tasks
+    confidence: str = "medium"
 
 
 class FollowUpAnswer(BaseModel):

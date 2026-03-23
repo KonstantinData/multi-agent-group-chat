@@ -102,7 +102,7 @@ def _service_relevance(industry: dict[str, Any], market: dict[str, Any]) -> list
     return items
 
 
-def build_synthesis_from_memory(
+def build_synthesis_context(
     *,
     company_profile: dict[str, Any],
     industry_analysis: dict[str, Any],
@@ -110,6 +110,15 @@ def build_synthesis_from_memory(
     quality_review: dict[str, Any],
     memory_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
+    """Prepare a synthesis context payload from department outputs.
+
+    This is pre-processing input for the AG2 SynthesisDepartment, not a
+    parallel synthesis author.  When AG2 succeeds, the AG2 output takes
+    authority (generation_mode="normal").  When AG2 times out or fails,
+    this context is promoted to the final synthesis with
+    generation_mode="fallback".  Confidence is derived from input package
+    quality — fallback does NOT automatically mean low confidence.
+    """
     service_relevance = _service_relevance(industry_analysis, market_network)
     if quality_review.get("evidence_health") == "low":
         service_relevance = [
@@ -208,6 +217,8 @@ def build_synthesis_from_memory(
         "key_risks": key_risks,
         "next_steps": next_steps,
         "sources": memory_snapshot.get("sources", []),
+        # Confidence derived from input package quality (orthogonal to generation_mode)
+        "confidence": quality_review.get("evidence_health", "low"),
     }
 
 

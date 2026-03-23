@@ -14,13 +14,13 @@ from src.agents.worker import ResearchWorker
 from src.config import get_model_pricing, get_role_model_selection, summarize_worker_report_costs
 from src.orchestration.task_router import build_initial_assignments
 from src.memory.policies import should_store_strategy
-from src.orchestration.synthesis import assess_research_readiness, build_synthesis_from_memory
+from src.orchestration.synthesis import assess_research_readiness, build_synthesis_context
 from src.pipeline_runner import _extract_pipeline_data, run_pipeline
 from src.domain.intake import SupervisorBrief
 
 
 def test_negative_placeholder_signals_are_not_treated_as_positive():
-    synthesis = build_synthesis_from_memory(
+    synthesis = build_synthesis_context(
         company_profile={"company_name": "Example GmbH", "industry": "Mechanical Engineering"},
         industry_analysis={
             "analytics_signals": [],

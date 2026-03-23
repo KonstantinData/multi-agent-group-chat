@@ -24,6 +24,7 @@ class SupervisorBrief:
     meta_description: str
     raw_homepage_excerpt: str
     normalized_domain: str
+    industry_hint: str = "n/v"
     observations: list[str] = field(default_factory=list)
     sources: list[dict[str, str]] = field(default_factory=list)
 

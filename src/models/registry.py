@@ -1,0 +1,186 @@
+"""Task-specific sub-schemas and the central SCHEMA_REGISTRY.
+
+Each task in STANDARD_TASK_BACKLOG has an ``output_schema_key`` that maps to a
+Pydantic model here.  All runtime code that needs to validate or instantiate a
+task output resolves through SCHEMA_REGISTRY — not through ad-hoc imports or
+string matching.
+
+Assembly convention
+-------------------
+Task-level sub-schemas are narrow slices of the broader section-level models
+(CompanyProfile, IndustryAnalysis, MarketNetwork, ContactIntelligenceSection).
+After task execution they are merged back into those section-level models for
+PipelineData assembly.  The sub-schemas exist only to give ``output_schema_key``
+a real type contract.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from src.models.schemas import (
+    CompanyRecord,
+    ContactPerson,
+    EconomicSituation,
+    MarketTier,
+    SourceRecord,
+)
+
+
+# ---------------------------------------------------------------------------
+# Company department sub-schemas
+# ---------------------------------------------------------------------------
+
+
+class CompanyFundamentals(BaseModel):
+    """Core identity, offering, and business model fields."""
+    company_name: str = "n/v"
+    legal_form: str = "n/v"
+    founded: str = "n/v"
+    headquarters: str = "n/v"
+    website: str = "n/v"
+    industry: str = "n/v"
+    employees: str = "n/v"
+    revenue: str = "n/v"
+    products_and_services: list[str] = Field(default_factory=list)
+    description: str = "n/v"
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+class ProductAssetScope(BaseModel):
+    """Goods, components, materials, and inventory positions."""
+    product_asset_scope: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+# EconomicSituation is already defined in schemas.py — reused directly.
+# output_schema_key "EconomicSituation" resolves to that class.
+
+
+# ---------------------------------------------------------------------------
+# Market department sub-schemas
+# ---------------------------------------------------------------------------
+
+
+class MarketSituation(BaseModel):
+    """Demand trend, supply pressure, and market assessment."""
+    industry_name: str = "n/v"
+    market_size: str = "n/v"
+    trend_direction: str = "n/v"
+    growth_rate: str = "n/v"
+    key_trends: list[str] = Field(default_factory=list)
+    overcapacity_signals: list[str] = Field(default_factory=list)
+    excess_stock_indicators: str = "n/v"
+    demand_outlook: str = "n/v"
+    assessment: str = "n/v"
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+class RepurposingCircularity(BaseModel):
+    """Repurposing and circularity landscape signals."""
+    repurposing_signals: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+class AnalyticsSignals(BaseModel):
+    """Analytics and operational improvement signals."""
+    analytics_signals: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Buyer department sub-schemas
+# ---------------------------------------------------------------------------
+
+
+class PeerCompanies(BaseModel):
+    """Peer and competitor company map."""
+    target_company: str = "n/v"
+    peer_competitors: MarketTier = Field(default_factory=MarketTier)
+
+
+class MonetizationRedeployment(BaseModel):
+    """Downstream buyer and redeployment landscape."""
+    target_company: str = "n/v"
+    downstream_buyers: MarketTier = Field(default_factory=MarketTier)
+    service_providers: MarketTier = Field(default_factory=MarketTier)
+    cross_industry_buyers: MarketTier = Field(default_factory=MarketTier)
+    monetization_paths: list[str] = Field(default_factory=list)
+    redeployment_paths: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Contact department sub-schemas
+# ---------------------------------------------------------------------------
+
+
+class ContactDiscoveryResult(BaseModel):
+    """Decision-makers found at prioritized buyer firms."""
+    contacts: list[ContactPerson] = Field(default_factory=list)
+    firms_searched: int = 0
+    contacts_found: int = 0
+    coverage_quality: str = "n/v"
+    open_questions: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+class ContactQualificationResult(BaseModel):
+    """Qualified and prioritized contacts with outreach angles."""
+    prioritized_contacts: list[ContactPerson] = Field(default_factory=list)
+    narrative_summary: str = "n/v"
+    open_questions: list[str] = Field(default_factory=list)
+    sources: list[SourceRecord] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Synthesis department sub-schemas
+# ---------------------------------------------------------------------------
+
+
+class OpportunityAssessment(BaseModel):
+    """Liquisto opportunity assessment after cross-domain review."""
+    opportunity_assessment_summary: str = "n/v"
+    recommended_engagement_paths: list[str] = Field(default_factory=list)
+
+
+class NegotiationRelevance(BaseModel):
+    """Negotiation leverage signals for the upcoming meeting."""
+    key_risks: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Central registry — resolves output_schema_key strings to Pydantic classes
+# ---------------------------------------------------------------------------
+
+SCHEMA_REGISTRY: dict[str, type[BaseModel]] = {
+    "CompanyFundamentals": CompanyFundamentals,
+    "EconomicSituation": EconomicSituation,
+    "ProductAssetScope": ProductAssetScope,
+    "MarketSituation": MarketSituation,
+    "RepurposingCircularity": RepurposingCircularity,
+    "AnalyticsSignals": AnalyticsSignals,
+    "PeerCompanies": PeerCompanies,
+    "MonetizationRedeployment": MonetizationRedeployment,
+    "ContactDiscoveryResult": ContactDiscoveryResult,
+    "ContactQualificationResult": ContactQualificationResult,
+    "OpportunityAssessment": OpportunityAssessment,
+    "NegotiationRelevance": NegotiationRelevance,
+}
+
+
+def resolve_output_schema(schema_key: str) -> type[BaseModel]:
+    """Return the Pydantic class for a given output_schema_key.
+
+    Raises KeyError with a clear message if the key is not registered,
+    so contract drift is caught at runtime rather than silently ignored.
+    """
+    try:
+        return SCHEMA_REGISTRY[schema_key]
+    except KeyError:
+        registered = ", ".join(sorted(SCHEMA_REGISTRY))
+        raise KeyError(
+            f"output_schema_key '{schema_key}' is not in SCHEMA_REGISTRY. "
+            f"Registered keys: {registered}"
+        ) from None

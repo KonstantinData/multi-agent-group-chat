@@ -20,14 +20,43 @@ def extract_product_keywords(text: str) -> list[str]:
 
 def infer_industry(title: str, description: str, text: str) -> str:
     haystack = " ".join([title or "", description or "", text or ""]).lower()
-    if any(token in haystack for token in ["machinery", "gear", "transmission", "engineering"]):
-        return "Mechanical Engineering"
-    if any(token in haystack for token in ["software", "cloud", "platform", "saas"]):
-        return "Software"
-    if any(token in haystack for token in ["medical", "pharma", "health"]):
+    # Ordered from most specific to most general to avoid false positives
+    if any(token in haystack for token in ["aerospace", "aviation", "defense", "rüstung", "luft- und raumfahrt"]):
+        return "Aerospace & Defense"
+    if any(token in haystack for token in ["pharma", "pharmaceutical", "biotechnology", "biotech", "medizintechnik", "medical device"]):
+        return "Life Sciences & Pharma"
+    if any(token in haystack for token in ["medical", "health", "hospital", "clinic", "gesundheit", "klinik"]):
         return "Healthcare"
-    if any(token in haystack for token in ["packaging", "plastics", "materials"]):
-        return "Industrial Materials"
+    if any(token in haystack for token in ["semiconductor", "chip", "microelectronics", "pcb", "halbleiter", "elektronik", "electronics"]):
+        return "Electronics & Semiconductors"
+    if any(token in haystack for token in ["automotive", "vehicle", "car manufacturer", "tier 1", "fahrzeug", "kraftfahrzeug", "automobil"]):
+        return "Automotive"
+    if any(token in haystack for token in ["machinery", "gear", "transmission", "mechanical engineering", "maschinenbau", "getriebe", "antrieb"]):
+        return "Mechanical Engineering"
+    if any(token in haystack for token in ["automation", "robotics", "robot", "plc", "scada", "motion control", "automatisierung", "roboter"]):
+        return "Industrial Automation"
+    if any(token in haystack for token in ["chemical", "coating", "adhesive", "lubricant", "polymer", "chemie", "beschichtung", "klebstoff"]):
+        return "Chemicals"
+    if any(token in haystack for token in ["metal", "steel", "aluminium", "casting", "forging", "stamping", "stahl", "metall", "guss", "schmiede"]):
+        return "Metal Manufacturing"
+    if any(token in haystack for token in ["construction", "real estate", "infrastructure", "bau", "immobilien", "hochbau", "tiefbau"]):
+        return "Construction & Real Estate"
+    if any(token in haystack for token in ["energy", "power", "solar", "wind", "utilities", "grid", "energie", "strom", "photovoltaik"]):
+        return "Energy & Utilities"
+    if any(token in haystack for token in ["logistics", "transport", "freight", "shipping", "supply chain", "logistik", "spedition", "fracht"]):
+        return "Logistics & Transport"
+    if any(token in haystack for token in ["food", "beverage", "agriculture", "farming", "lebensmittel", "getränk", "landwirtschaft"]):
+        return "Food, Beverage & Agriculture"
+    if any(token in haystack for token in ["textile", "apparel", "fashion", "garment", "textil", "bekleidung", "mode"]):
+        return "Textile & Apparel"
+    if any(token in haystack for token in ["printing", "paper", "packaging", "plastics", "druck", "papier", "verpackung", "kunststoff"]):
+        return "Packaging & Materials"
+    if any(token in haystack for token in ["retail", "e-commerce", "wholesale", "distribution", "handel", "großhandel", "einzelhandel"]):
+        return "Retail & Distribution"
+    if any(token in haystack for token in ["software", "cloud", "platform", "saas", "it services", "digital", "app", "entwicklung"]):
+        return "Software & IT Services"
+    if any(token in haystack for token in ["finance", "bank", "insurance", "fintech", "capital", "finanz", "versicherung", "kapital"]):
+        return "Financial Services"
     return "n/v"
 
 

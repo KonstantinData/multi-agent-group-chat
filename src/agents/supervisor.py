@@ -7,6 +7,7 @@ from src.app.use_cases import build_standard_scope
 from src.config import get_role_model_selection
 from src.domain.intake import IntakeRequest, SupervisorBrief
 from src.orchestration.tool_policy import resolve_allowed_tools
+from src.research.extract import infer_industry
 from src.research.tools import build_company_research
 
 
@@ -23,6 +24,11 @@ class SupervisorAgent:
     def build_intake_brief(self, intake: IntakeRequest) -> tuple[SupervisorBrief, dict]:
         research = build_company_research(intake.web_domain, intake.company_name)
         snapshot = research["snapshot"]
+        industry_hint = infer_industry(
+            title=str(snapshot.get("title", "")),
+            description=str(snapshot.get("meta_description", "")),
+            text=str(research.get("summary", "")),
+        )
         brief = SupervisorBrief(
             submitted_company_name=intake.company_name,
             submitted_web_domain=intake.web_domain,
@@ -35,6 +41,7 @@ class SupervisorAgent:
             meta_description=str(snapshot.get("meta_description", "")),
             raw_homepage_excerpt=str(research["summary"]),
             normalized_domain=str(research["normalized_domain"]),
+            industry_hint=industry_hint,
             observations=[
                 "Website reachable." if snapshot.get("reachable") else "Website not reachable.",
                 f"Verified company name: {research.get('verified_company_name', intake.company_name)}.",

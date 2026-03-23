@@ -414,7 +414,9 @@ class DepartmentLeadAgent:
             """Make a final edge-case decision when retries are exhausted."""
             review = run_state["last_reviews"].get(task_key, {})
             result = self.judge.decide(
-                section=task_key, critic_issues=review.get("issues", [])
+                section=task_key,
+                critic_review=review if review else None,
+                critic_issues=review.get("issues", []) if review else [],
             )
             return json.dumps(result, ensure_ascii=False)
 
@@ -436,20 +438,27 @@ class DepartmentLeadAgent:
                         objective=assignment.objective,
                         payload=report["payload"],
                     )
-                    accepted = final_review["approved"]
+                    judge_result = self.judge.decide(
+                        section=assignment.task_key,
+                        critic_review=final_review,
+                    )
+                    task_status = judge_result["task_status"]  # accepted | degraded | rejected
+                    judge_open_questions = judge_result.get("open_questions", [])
                     accepted_points.extend(final_review.get("accepted_points", []))
                     open_questions.extend(report.get("open_questions", []))
+                    open_questions.extend(judge_open_questions)
                     sources.extend(report.get("sources", []))
                     task_summaries.append(
                         {
                             "task_key": assignment.task_key,
                             "label": assignment.label,
-                            "status": "accepted" if accepted else "conservative",
+                            "status": task_status,
                             "accepted_points": final_review.get("accepted_points", []),
                             "open_points": list(
                                 dict.fromkeys(
                                     report.get("open_questions", [])
                                     + final_review.get("missing_points", [])
+                                    + judge_open_questions
                                 )
                             ),
                             "summary": report.get("objective", assignment.objective),
@@ -460,17 +469,23 @@ class DepartmentLeadAgent:
                         {
                             "task_key": assignment.task_key,
                             "label": assignment.label,
-                            "status": "conservative",
+                            "status": "rejected",
                             "accepted_points": [],
                             "open_points": ["No research result produced."],
                             "summary": assignment.objective,
                         }
                     )
 
-            # Derive confidence from task results
+            # Derive package confidence from task statuses
             accepted_count = sum(1 for t in task_summaries if t.get("status") == "accepted")
+            degraded_count = sum(1 for t in task_summaries if t.get("status") == "degraded")
             total_count = len(task_summaries) or 1
-            confidence = "high" if accepted_count == total_count else ("medium" if accepted_count > 0 else "low")
+            if accepted_count == total_count:
+                confidence = "high"
+            elif accepted_count + degraded_count > 0:
+                confidence = "medium"
+            else:
+                confidence = "low"
 
             report_segment = DomainReportSegment(
                 department=self.department,
@@ -494,6 +509,7 @@ class DepartmentLeadAgent:
                     "sources": sources[:12],
                     "autogen_group": self.autogen_group_spec(),
                     "report_segment": report_segment,
+                    "confidence": confidence,
                 }
             ).model_dump(mode="json")
 
@@ -955,16 +971,28 @@ Your query suggestions will be used by {self.researcher_name} on the next resear
                     objective=assignment.objective,
                     payload=report["payload"],
                 )
+                judge_result = self.judge.decide(
+                    section=assignment.task_key,
+                    critic_review=final_review,
+                )
+                task_status = judge_result["task_status"]
+                judge_open_questions = judge_result.get("open_questions", [])
                 accepted_points.extend(final_review.get("accepted_points", []))
                 open_questions.extend(report.get("open_questions", []))
+                open_questions.extend(judge_open_questions)
                 sources.extend(report.get("sources", []))
                 task_summaries.append(
                     {
                         "task_key": assignment.task_key,
                         "label": assignment.label,
-                        "status": "conservative",
+                        "status": task_status,
                         "accepted_points": final_review.get("accepted_points", []),
-                        "open_points": final_review.get("missing_points", []),
+                        "open_points": list(
+                            dict.fromkeys(
+                                final_review.get("missing_points", [])
+                                + judge_open_questions
+                            )
+                        ),
                         "summary": report.get("objective", assignment.objective),
                     }
                 )
@@ -973,18 +1001,28 @@ Your query suggestions will be used by {self.researcher_name} on the next resear
                     {
                         "task_key": assignment.task_key,
                         "label": assignment.label,
-                        "status": "conservative",
+                        "status": "rejected",
                         "accepted_points": [],
                         "open_points": ["Research did not complete within max_round."],
                         "summary": assignment.objective,
                     }
                 )
 
+        accepted_count = sum(1 for t in task_summaries if t.get("status") == "accepted")
+        degraded_count = sum(1 for t in task_summaries if t.get("status") == "degraded")
+        total_count = len(task_summaries) or 1
+        if accepted_count == total_count:
+            fallback_confidence = "high"
+        elif accepted_count + degraded_count > 0:
+            fallback_confidence = "medium"
+        else:
+            fallback_confidence = "low"
+
         return DepartmentPackage.model_validate(
             {
                 "department": self.department,
                 "target_section": assignments[0].target_section if assignments else "n/v",
-                "summary": f"{self.department} package conservative — max_round reached before finalization.",
+                "summary": f"{self.department} package degraded — max_round reached before finalization.",
                 "section_payload": run_state["current_payload"],
                 "completed_tasks": task_summaries,
                 "accepted_points": list(dict.fromkeys(accepted_points)),
@@ -992,5 +1030,6 @@ Your query suggestions will be used by {self.researcher_name} on the next resear
                 "visual_focus": _VISUAL_FOCUS.get(self.department, []),
                 "sources": sources[:12],
                 "autogen_group": self.autogen_group_spec(),
+                "confidence": fallback_confidence,
             }
         ).model_dump(mode="json")

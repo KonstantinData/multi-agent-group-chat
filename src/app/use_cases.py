@@ -32,6 +32,22 @@ rest of the standard research scope automatically.
 """.strip()
 
 
+# ---------------------------------------------------------------------------
+# Validation rule format (used by CriticAgent):
+#
+#   {
+#       "check": "non_placeholder" | "min_items" | "min_length",
+#       "field": "dotted.path.into.payload",
+#       "value": <int>,         # required for min_items / min_length
+#       "class": "core" | "supporting",
+#       "message": "human-readable failure reason",
+#   }
+#
+# class semantics:
+#   core       — must pass for task to be accepted; determines degraded/rejected
+#   supporting — improves confidence but task can still be accepted without it
+# ---------------------------------------------------------------------------
+
 STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
     {
         "task_key": "company_fundamentals",
@@ -39,6 +55,17 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "CompanyDepartment",
         "target_section": "company_profile",
         "objective_template": "Build verified company fundamentals for {company_name}, including identity, offering, footprint, and business model.",
+        "depends_on": [],
+        "run_condition": None,
+        "input_artifacts": [],
+        "output_schema_key": "CompanyFundamentals",
+        "validation_rules": [
+            {"check": "non_placeholder", "field": "company_name", "class": "core", "message": "Company name is not identified"},
+            {"check": "non_placeholder", "field": "website", "class": "core", "message": "Company website is not verified"},
+            {"check": "non_placeholder", "field": "industry", "class": "core", "message": "Industry classification is missing"},
+            {"check": "min_items", "field": "products_and_services", "value": 1, "class": "supporting", "message": "No products or services listed"},
+            {"check": "non_placeholder", "field": "description", "class": "supporting", "message": "Business description is absent"},
+        ],
     },
     {
         "task_key": "economic_commercial_situation",
@@ -46,6 +73,15 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "CompanyDepartment",
         "target_section": "company_profile",
         "objective_template": "Assess public signals of economic and commercial pressure for {company_name}, including growth, contraction, inventory stress, shortage or excess dynamics, and strategic change.",
+        "depends_on": ["company_fundamentals"],
+        "run_condition": None,
+        "input_artifacts": ["CompanyFundamentals"],
+        "output_schema_key": "EconomicSituation",
+        "validation_rules": [
+            {"check": "non_placeholder", "field": "economic_situation.assessment", "class": "core", "message": "Economic assessment is missing"},
+            {"check": "min_items", "field": "economic_situation.recent_events", "value": 1, "class": "supporting", "message": "No recent commercial events recorded"},
+            {"check": "min_items", "field": "economic_situation.inventory_signals", "value": 1, "class": "supporting", "message": "No inventory signals found"},
+        ],
     },
     {
         "task_key": "market_situation",
@@ -53,6 +89,16 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "MarketDepartment",
         "target_section": "industry_analysis",
         "objective_template": "Assess the market situation for {company_name}: demand trend, supply pressure, overcapacity, growth or decline, and why.",
+        "depends_on": [],
+        "run_condition": None,
+        "input_artifacts": [],
+        "output_schema_key": "MarketSituation",
+        "validation_rules": [
+            {"check": "non_placeholder", "field": "industry_name", "class": "core", "message": "Industry name is missing"},
+            {"check": "non_placeholder", "field": "assessment", "class": "core", "message": "Market assessment is missing"},
+            {"check": "min_items", "field": "key_trends", "value": 1, "class": "supporting", "message": "No market trends identified"},
+            {"check": "non_placeholder", "field": "demand_outlook", "class": "supporting", "message": "Demand outlook is not assessed"},
+        ],
     },
     {
         "task_key": "peer_companies",
@@ -60,6 +106,15 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "BuyerDepartment",
         "target_section": "market_network",
         "objective_template": "Identify direct and close peer companies producing the same or similar goods as {company_name}.",
+        "depends_on": ["market_situation"],
+        "run_condition": None,
+        "input_artifacts": ["MarketSituation"],
+        "output_schema_key": "PeerCompanies",
+        "validation_rules": [
+            {"check": "non_placeholder", "field": "target_company", "class": "core", "message": "Target company is not confirmed"},
+            {"check": "non_placeholder", "field": "peer_competitors.assessment", "class": "core", "message": "Peer landscape assessment is missing"},
+            {"check": "min_items", "field": "peer_competitors.companies", "value": 1, "class": "supporting", "message": "No peer companies identified"},
+        ],
     },
     {
         "task_key": "product_asset_scope",
@@ -67,6 +122,13 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "CompanyDepartment",
         "target_section": "company_profile",
         "objective_template": "Identify which goods, components, materials, spare parts, or inventory positions are visible in {company_name}. Distinguish between products the company appears to make itself, products it mainly distributes or resells, and materials, spare parts, or stock it holds. Include internal assets only when they appear relevant for inventory, redeployment, repurposing, or operational analysis, and highlight which items matter most for later buyer, resale, redeployment, repurposing, aftermarket, or inventory-management analysis.",
+        "depends_on": ["company_fundamentals"],
+        "run_condition": None,
+        "input_artifacts": ["CompanyFundamentals"],
+        "output_schema_key": "ProductAssetScope",
+        "validation_rules": [
+            {"check": "min_items", "field": "product_asset_scope", "value": 1, "class": "core", "message": "No product or asset scope items identified"},
+        ],
     },
     {
         "task_key": "monetization_redeployment",
@@ -74,6 +136,16 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "BuyerDepartment",
         "target_section": "market_network",
         "objective_template": "Identify plausible resale, redeployment, reuse, and secondary-market paths for the goods and assets identified for {company_name}, including likely buyers and why each route is relevant.",
+        "depends_on": ["peer_companies"],
+        "run_condition": None,
+        "input_artifacts": ["MarketNetwork"],
+        "output_schema_key": "MonetizationRedeployment",
+        "validation_rules": [
+            {"check": "non_placeholder", "field": "target_company", "class": "core", "message": "Target company is not confirmed"},
+            {"check": "min_items", "field": "downstream_buyers.companies", "value": 1, "class": "core", "message": "No downstream buyers identified"},
+            {"check": "min_items", "field": "monetization_paths", "value": 1, "class": "supporting", "message": "No monetization paths defined"},
+            {"check": "min_items", "field": "redeployment_paths", "value": 1, "class": "supporting", "message": "No redeployment paths defined"},
+        ],
     },
     {
         "task_key": "repurposing_circularity",
@@ -81,6 +153,13 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "MarketDepartment",
         "target_section": "industry_analysis",
         "objective_template": "Identify plausible repurposing and circularity paths for unused materials, components, or adjacent assets from {company_name}.",
+        "depends_on": ["market_situation"],
+        "run_condition": None,
+        "input_artifacts": ["IndustryAnalysis"],
+        "output_schema_key": "RepurposingCircularity",
+        "validation_rules": [
+            {"check": "min_items", "field": "repurposing_signals", "value": 1, "class": "core", "message": "No repurposing signals identified"},
+        ],
     },
     {
         "task_key": "analytics_operational_improvement",
@@ -88,6 +167,13 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "MarketDepartment",
         "target_section": "industry_analysis",
         "objective_template": "Identify planning, reporting, inventory-visibility, or decision-support signals where analytics could create value for {company_name}.",
+        "depends_on": ["market_situation"],
+        "run_condition": None,
+        "input_artifacts": ["IndustryAnalysis"],
+        "output_schema_key": "AnalyticsSignals",
+        "validation_rules": [
+            {"check": "min_items", "field": "analytics_signals", "value": 1, "class": "core", "message": "No analytics signals identified"},
+        ],
     },
     {
         "task_key": "contact_discovery",
@@ -95,6 +181,14 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "ContactDepartment",
         "target_section": "contact_intelligence",
         "objective_template": "Identify publicly visible decision-makers and relevant contacts at buyer firms identified for {company_name}. Focus on procurement, asset management, operations, and supply chain functions.",
+        "depends_on": ["peer_companies", "monetization_redeployment"],
+        "run_condition": "buyer_department_has_prioritized_firms",
+        "input_artifacts": ["MarketNetwork"],
+        "output_schema_key": "ContactDiscoveryResult",
+        "validation_rules": [
+            {"check": "min_items", "field": "contacts", "value": 1, "class": "core", "message": "No contacts identified at buyer firms"},
+            {"check": "non_placeholder", "field": "coverage_quality", "class": "supporting", "message": "Coverage quality not assessed"},
+        ],
     },
     {
         "task_key": "contact_qualification",
@@ -102,6 +196,14 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "ContactDepartment",
         "target_section": "contact_intelligence",
         "objective_template": "Qualify identified contacts for {company_name} buyer firms by seniority, function, and Liquisto relevance. Suggest a concrete outreach angle per contact based on the buyer context.",
+        "depends_on": ["contact_discovery"],
+        "run_condition": "contact_discovery_completed",
+        "input_artifacts": ["ContactDiscoveryResult"],
+        "output_schema_key": "ContactQualificationResult",
+        "validation_rules": [
+            {"check": "min_items", "field": "prioritized_contacts", "value": 1, "class": "core", "message": "No contacts qualified and prioritized"},
+            {"check": "non_placeholder", "field": "narrative_summary", "class": "supporting", "message": "No qualification narrative provided"},
+        ],
     },
     {
         "task_key": "liquisto_opportunity_assessment",
@@ -109,6 +211,14 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "SynthesisDepartment",
         "target_section": "synthesis",
         "objective_template": "After the research is complete, assess which Liquisto path is most plausible for {company_name} based on the evidence and explain why.",
+        "depends_on": ["company_fundamentals", "market_situation", "peer_companies", "monetization_redeployment"],
+        "run_condition": None,
+        "input_artifacts": ["CompanyProfile", "IndustryAnalysis", "MarketNetwork"],
+        "output_schema_key": "OpportunityAssessment",
+        "validation_rules": [
+            {"check": "non_placeholder", "field": "opportunity_assessment_summary", "class": "core", "message": "Opportunity assessment is missing"},
+            {"check": "min_items", "field": "recommended_engagement_paths", "value": 1, "class": "supporting", "message": "No recommended engagement paths identified"},
+        ],
     },
     {
         "task_key": "negotiation_relevance",
@@ -116,8 +226,45 @@ STANDARD_TASK_BACKLOG: list[dict[str, Any]] = [
         "assignee": "SynthesisDepartment",
         "target_section": "synthesis",
         "objective_template": "Summarize signals that help Liquisto estimate urgency, pricing power, buyer demand, repurposing leverage, analytics potential, and the strongest next meeting angle for {company_name}.",
+        "depends_on": ["liquisto_opportunity_assessment"],
+        "run_condition": None,
+        "input_artifacts": ["Synthesis"],
+        "output_schema_key": "NegotiationRelevance",
+        "validation_rules": [
+            {"check": "min_items", "field": "next_steps", "value": 1, "class": "core", "message": "No next steps defined"},
+            {"check": "min_items", "field": "key_risks", "value": 1, "class": "supporting", "message": "No key risks identified"},
+        ],
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Lookup helpers — single source of truth for validation rules
+# ---------------------------------------------------------------------------
+
+_TASK_VALIDATION_RULES: dict[str, list[dict[str, Any]]] = {
+    task["task_key"]: task.get("validation_rules", [])
+    for task in STANDARD_TASK_BACKLOG
+}
+
+_TASK_CONTRACT_BY_KEY: dict[str, dict[str, Any]] = {
+    task["task_key"]: task
+    for task in STANDARD_TASK_BACKLOG
+}
+
+
+def get_task_validation_rules(task_key: str) -> list[dict[str, Any]]:
+    """Return the validation_rules list for a given task_key.
+
+    Returns an empty list for unknown task_keys (e.g. synthesis tasks
+    that go through a different quality path).
+    """
+    return _TASK_VALIDATION_RULES.get(task_key, [])
+
+
+def get_task_contract(task_key: str) -> dict[str, Any] | None:
+    """Return the full task contract dict for a given task_key, or None."""
+    return _TASK_CONTRACT_BY_KEY.get(task_key)
 
 
 def build_standard_scope() -> str:

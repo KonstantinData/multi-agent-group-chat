@@ -7,6 +7,7 @@ Architecture changes from previous version:
 1.  **No Supervisor in the inner loop** (CHG-03)
     ``request_supervisor_revision`` is gone.  The Lead decides retry, coding
     support, and Judge escalation autonomously inside the department contract.
+    The department interface has no ``supervisor`` parameter.
 
 2.  **Artifact-based task execution** (CHG-05)
     ``run_research`` → ``TaskArtifact``
@@ -266,7 +267,6 @@ class DepartmentLeadAgent:
         brief: SupervisorBrief,
         assignments: list[Assignment],
         current_section: dict[str, Any] | None,
-        supervisor=None,   # CHG-03: ignored — department is now autonomous
         memory_store=None,
         role_memory: dict[str, list[dict[str, Any]]] | None = None,
         on_message: MessageHook = None,
@@ -276,13 +276,6 @@ class DepartmentLeadAgent:
         Returns:
             (section_payload, package_messages, department_package)
         """
-        if supervisor is not None:
-            logger.debug(
-                "CHG-03: supervisor parameter passed to %s.run() but is no longer used. "
-                "The department works autonomously inside its contract.",
-                self.name,
-            )
-
         self._completed_package = None
 
         if memory_store is not None:

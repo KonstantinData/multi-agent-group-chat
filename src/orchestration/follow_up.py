@@ -129,14 +129,17 @@ def _company_answer(
     )
     run_state = _get_department_run_state(run_context, "CompanyDepartment")
 
-    # CHG-08: enrich evidence from run brain artifacts
+    # Evidence priority (CHG-08 / P1-4):
+    #   1. Primary: task_artifacts + review_artifacts from run brain
+    #   2. Secondary: pipeline_data (final assembled section)
+    #   3. Fallback: department_packages (open_questions)
     artifact_evidence, artifact_unresolved = _extract_task_evidence(run_state)
 
     evidence = [
+        *artifact_evidence[:4],
         profile.get("description", ""),
         *profile.get("product_asset_scope", [])[:3],
         profile.get("economic_situation", {}).get("assessment", ""),
-        *artifact_evidence[:4],
     ]
     unresolved = list(dict.fromkeys(
         package.get("open_questions", [])[:2] + artifact_unresolved[:2]
@@ -161,14 +164,18 @@ def _market_answer(
         .get("MarketDepartment", {})
     )
     run_state = _get_department_run_state(run_context, "MarketDepartment")
+    # Evidence priority (CHG-08 / P1-4):
+    #   1. Primary: task_artifacts + review_artifacts from run brain
+    #   2. Secondary: pipeline_data (final assembled section)
+    #   3. Fallback: department_packages (open_questions)
     artifact_evidence, artifact_unresolved = _extract_task_evidence(run_state)
 
     evidence = [
+        *artifact_evidence[:3],
         analysis.get("assessment", ""),
         analysis.get("demand_outlook", ""),
         *analysis.get("repurposing_signals", [])[:2],
         *analysis.get("analytics_signals", [])[:2],
-        *artifact_evidence[:3],
     ]
     unresolved = list(dict.fromkeys(
         package.get("open_questions", [])[:2] + artifact_unresolved[:2]
@@ -193,16 +200,20 @@ def _buyer_answer(
         .get("BuyerDepartment", {})
     )
     run_state = _get_department_run_state(run_context, "BuyerDepartment")
+    # Evidence priority (CHG-08 / P1-4):
+    #   1. Primary: task_artifacts + review_artifacts from run brain
+    #   2. Secondary: pipeline_data (final assembled section)
+    #   3. Fallback: department_packages (open_questions)
     artifact_evidence, artifact_unresolved = _extract_task_evidence(run_state)
 
     peers = network.get("peer_competitors", {}).get("companies", [])
     buyers = network.get("downstream_buyers", {}).get("companies", [])
     evidence = [
+        *artifact_evidence[:3],
         network.get("peer_competitors", {}).get("assessment", ""),
         network.get("downstream_buyers", {}).get("assessment", ""),
         *network.get("monetization_paths", [])[:2],
         *network.get("redeployment_paths", [])[:2],
-        *artifact_evidence[:3],
     ]
     unresolved = list(dict.fromkeys(
         package.get("open_questions", [])[:2] + artifact_unresolved[:2]
@@ -226,13 +237,17 @@ def _contact_answer(
         .get("ContactDepartment", {})
     )
     run_state = _get_department_run_state(run_context, "ContactDepartment")
+    # Evidence priority (CHG-08 / P1-4):
+    #   1. Primary: task_artifacts + review_artifacts from run brain
+    #   2. Secondary: pipeline_data (final assembled section)
+    #   3. Fallback: department_packages (open_questions)
     artifact_evidence, artifact_unresolved = _extract_task_evidence(run_state)
 
     contacts = section.get("prioritized_contacts", section.get("contacts", []))
     evidence = [
+        *artifact_evidence[:2],
         section.get("narrative_summary", ""),
         *[f"{c.get('name', '')} — {c.get('rolle_titel', '')} at {c.get('firma', '')}" for c in contacts[:3]],
-        *artifact_evidence[:2],
     ]
     unresolved = list(dict.fromkeys(
         package.get("open_questions", [])[:2] + artifact_unresolved[:2]

@@ -319,24 +319,28 @@ class TestShortTermMemoryStoreRunBrain:
 # ===========================================================================
 
 class TestNoSupervisorInDepartmentLoop:
-    def test_department_lead_run_accepts_no_supervisor(self):
-        """DepartmentLeadAgent.run() must accept supervisor=None without error."""
+    def test_department_lead_run_has_no_supervisor_param(self):
+        """DepartmentLeadAgent.run() must not accept a supervisor parameter."""
         from src.agents.lead import DepartmentLeadAgent
         lead = DepartmentLeadAgent("CompanyDepartment")
-        # The signature must accept supervisor=None; no AttributeError on None
         import inspect
         sig = inspect.signature(lead.run)
         params = sig.parameters
-        assert "supervisor" in params
-        assert params["supervisor"].default is None
+        assert "supervisor" not in params, (
+            "supervisor parameter still present in DepartmentLeadAgent.run() — "
+            "P1-1 requires full removal"
+        )
 
-    def test_department_runtime_run_accepts_no_supervisor(self):
+    def test_department_runtime_run_has_no_supervisor_param(self):
         from src.orchestration.department_runtime import DepartmentRuntime
         import inspect
         rt = DepartmentRuntime.__new__(DepartmentRuntime)
         sig = inspect.signature(rt.run)
         params = sig.parameters
-        assert params["supervisor"].default is None
+        assert "supervisor" not in params, (
+            "supervisor parameter still present in DepartmentRuntime.run() — "
+            "P1-1 requires full removal"
+        )
 
     def test_lead_has_no_request_supervisor_revision_tool(self):
         """request_supervisor_revision must not be used as a function/tool in lead.py."""

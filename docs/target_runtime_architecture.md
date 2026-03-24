@@ -160,9 +160,10 @@ exactly four guardrails in order:
 3. Text-only loop (≥ 3 consecutive text turns) for a non-lead agent → lead
 4. `"TERMINATE"` in last message content → lead
 
-When the Lead spoke, the selector parses the message content to route to the
-addressed agent (researcher / critic / judge / coding specialist). If no
-address is found, it defaults to researcher.
+Beyond the guardrails, the selector provides Lead-driven routing: when the
+Lead spoke, it parses the message content to route to the addressed agent
+(researcher / critic / judge / coding specialist). If no address is found,
+it defaults to researcher. Non-lead text turns always return to the Lead.
 
 The selector does **not** maintain workflow state. The Lead owns the workflow
 through explicit agent addressing and the task contract.
@@ -187,8 +188,9 @@ Lead calls: finalize_package(summary) → TERMINATE
 
 ### Supervisor boundary (CHG-03)
 
-The Supervisor does **not** pass itself into `DepartmentLeadAgent.run()`.
-`supervisor=None` in `DepartmentRuntime.run()` and `DepartmentLeadAgent.run()`.
+The Supervisor does **not** pass itself into department runs.
+The `DepartmentRuntime.run()` and `DepartmentLeadAgent.run()` interfaces
+have no `supervisor` parameter.
 
 The department group completes the full critique → retry → coding support →
 judge escalation path without any Supervisor intervention. The Supervisor

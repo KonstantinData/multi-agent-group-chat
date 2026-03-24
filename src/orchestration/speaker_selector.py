@@ -8,13 +8,16 @@ the agents actually said.
 
 New architecture:
 - The Department Lead drives the internal workflow through its messages.
-- The selector enforces safety rails:
+- The selector enforces four safety guardrails:
     1. Route tool calls to the executor agent (mandatory).
     2. After executor runs, return to the Lead — the Lead sees the result
        and decides what to do next.
     3. Prevent text-only loops: force back to Lead after too many non-tool turns.
-    4. Invalid-handoff protection: ensure Lead speaks first.
-    5. Termination recognition: honour TERMINATE signals.
+    4. Termination recognition: honour TERMINATE signals.
+- Beyond the guardrails, the selector provides Lead-driven routing:
+  when the Lead speaks, it parses the message to route to the addressed
+  agent. If no agent is addressed, it defaults to the Researcher.
+  Non-lead text turns always return to the Lead.
 
 The selector no longer reads ``workflow_step`` and no longer controls the
 task ordering.  The Lead's prompt instructions and the group conversation

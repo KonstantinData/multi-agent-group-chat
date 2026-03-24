@@ -22,7 +22,17 @@
       "Bash(.venv/Scripts/pytest test_pipeline.py test_contracts.py test_optimizations.py -x -q)",
       "Bash(python -m pytest test_pipeline.py test_contracts.py test_optimizations.py -x -q)",
       "Bash(python -m pytest test_contracts.py test_optimizations.py -x -q)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(find d:/Git-GitHub/Repositories/00-Liquisto/multi-agent-intel-pipeline/tests -type f -name *.py)",
+      "Bash(python -m pytest test_contracts.py -q --tb=short)",
+      "Bash(python -m pytest test_pipeline.py -q --tb=short)",
+      "Bash(python -c \"from src.orchestration.contracts import DepartmentRunState, TaskArtifact, TaskReviewArtifact, TaskDecisionArtifact; print\\(''contracts OK''\\)\")",
+      "Bash(python -c \"from src.orchestration.speaker_selector import build_department_selector, build_synthesis_selector; print\\(''selector OK''\\)\")",
+      "Bash(python -c \"from src.memory.short_term_store import ShortTermMemoryStore; print\\(''short_term_store OK''\\)\")",
+      "Bash(python -c \"from src.memory.consolidation import consolidate_role_patterns; print\\(''consolidation OK''\\)\")",
+      "Bash(python -c \"from src.agents.lead import DepartmentLeadAgent; print\\(''lead OK''\\)\")",
+      "Bash(python -m pytest test_runtime_architecture.py -q --tb=short)",
+      "Bash(python -m pytest test_contracts.py test_runtime_architecture.py -q --tb=short)"
     ]
   }
 }

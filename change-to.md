@@ -159,9 +159,9 @@ Today, the runtime is largely driven by shared mutable dictionaries and `workflo
 - [x] Define terminal / non-terminal task states.
 - [x] Define allowed task decision outcomes:
   - [x] `accepted`
-  - [x] `accepted_degraded`
-  - [x] `reject`
-  - [x] `needs_coding_support`
+  - [x] `accepted_with_gaps`
+  - [x] `rework_required`
+  - [x] `escalated_to_judge`
   - [x] `closed_unresolved`
 
 ### Implementation tasks
@@ -230,13 +230,15 @@ Keep the Supervisor as control-plane owner, but remove it from intra-department 
 - [x] Retry authorization moved into the department (Lead prompt encodes `MAX_TASK_RETRIES` policy).
 - [x] Coding-specialist authorization moved into department logic.
 - [x] Judge escalation decision moved into department logic.
+- [x] `supervisor` parameter removed from `DepartmentRuntime.run()` and `DepartmentLeadAgent.run()` interfaces (P1-1).
 
 ### Acceptance check
 - [x] Department completes critique → retry → coding support → judge escalation without Supervisor intervention.
 - [x] Supervisor sees only contract handoff and final package return.
+- [x] Department interfaces have no `supervisor` parameter.
 
 ### Implementation notes
-`request_supervisor_revision` removed from `lead.py` tool registration and logic. `supervisor=None` default in `DepartmentRuntime.run()` and `DepartmentLeadAgent.run()`. `supervisor_loop.py` updated to omit supervisor from both parallel and sequential department calls. Warning logged if `supervisor` is passed to Lead (CHG-03 guard).
+`request_supervisor_revision` removed from `lead.py` tool registration and logic. `supervisor` parameter fully removed from `DepartmentRuntime.run()` and `DepartmentLeadAgent.run()` — not just ignored, but absent from the interface. `supervisor_loop.py` calls department runs without any supervisor reference.
 
 ---
 
@@ -251,7 +253,7 @@ Allow the AG2 group to work autonomously while keeping loop safety and sane turn
 
 ### Checklist
 - [x] Remove hard-coded step sequencing based on `workflow_step`.
-- [x] Selector has exactly 4 guardrails: tool_calls→executor, after executor→lead, text-only loop prevention, TERMINATE→lead.
+- [x] Selector has exactly 4 guardrails: tool_calls→executor, after executor→lead, text-only loop prevention, TERMINATE→lead. Beyond guardrails, Lead-driven routing parses addressed agents.
 - [x] Lead-driven routing: Lead's message content parsed to route to researcher/critic/judge/coding.
 - [x] Default: any non-lead text turn → lead.
 - [x] `build_department_selector` takes `guardrail_state: dict` (not `run_state`).

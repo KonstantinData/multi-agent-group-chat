@@ -91,7 +91,6 @@ def run_supervisor_loop(
             brief=brief,
             assignments=list(dept_assignment.assignments),
             current_section=current_sec,
-            # CHG-03: supervisor not passed — department is autonomous
             memory_store=run_context.short_term_memory,
             role_memory=run_context.retrieved_role_strategies,
             on_message=on_message,
@@ -245,7 +244,6 @@ def run_supervisor_loop(
             brief=brief,
             assignments=runnable,
             current_section=current_section,
-            # CHG-03: supervisor not passed — department is autonomous
             memory_store=run_context.short_term_memory,
             role_memory=run_context.retrieved_role_strategies,
             on_message=on_message,

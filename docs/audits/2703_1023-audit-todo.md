@@ -1,7 +1,7 @@
 # 2703_1023 Audit TODO
 
-**Bezug:** Restpunkte aus `2503_0943-audit-todo.md` + Findings aus Run-Analyse 20260325T160316Z–20260325T171010Z  
-**Zweck:** Umsetzungsdatei fuer verbleibende Haertungen und neue Findings nach Abschluss des Erst-Audits  
+**Bezug:** Restpunkte aus `2503_0943-audit-todo.md` + Findings aus `2703_1023-audit.md` + Run-Analyse  
+**Zweck:** Umsetzungsdatei fuer verbleibende Architekturdefekte und Haertungen  
 **Prinzip:** Jedes Finding hat eine klare Patch-Sequenz. Keine Umsetzung ohne Review.
 
 ---
@@ -10,307 +10,371 @@
 
 | ID | Thema | Severity | Prioritaet | Status |
 |---|---|---:|---:|---|
-| R1 | `_synthesis_admission` Marker durch Envelope-Konsum ersetzen | mittel | P1 | Offen |
-| R2 | `needs_contract_review` Judge-Eskalation verdrahten | mittel | P1 | Offen |
-| R3 | DAG-Linter Phase-Kompatibilitaet pruefen | niedrig-mittel | P1 | Offen |
-| R4 | Follow-up-Pfad auf Envelope-Format umstellen | mittel | P1 | Offen |
-| R5 | Blocked-Artifact als Pydantic-Modell formalisieren | niedrig-mittel | P2 | Offen |
-| R6 | Kanonische Dedup-Keys pro Sammlung | niedrig | P2 | Offen |
-| R7 | Merge-Konflikt-Policy (fail-fast vs. warn) | niedrig | P2 | Offen |
-| R8 | Kanonische Vokabular-Mengen als StrEnum | niedrig | P2 | Offen |
-| R9 | Statische Typpruefung (mypy/pyright) einfuehren | niedrig | P2 | Offen |
-| R10 | CI-Pipeline technisch explizit festziehen | niedrig | P2 | Offen |
-| R11 | AGENT_SPECS semantisch rahmen / aufteilen | niedrig | P2 | Offen |
-| R12 | Drawio-Architekturdiagramm aktualisieren | niedrig | P3 | Offen |
-| R13 | `definitions.py` Kompatibilitaets-Shim entfernen | niedrig | P3 | Offen |
+| P0-1 | `department_packages` Shape eindeutig machen | kritisch | P0 | Offen |
+| P0-2 | Synthesis-Consumption fixen (report_segment, segments, confidences) | kritisch | P0 | Offen |
+| P0-3 | Regressionstests auf Envelope-Shape | hoch | P0 | Offen |
+| P0-4 | `build_report_package()` an Envelope-Semantik anpassen | hoch | P0 | Offen |
+| P1-1 | `needs_contract_review` autoritativ verdrahten | mittel | P1 | Offen |
+| P1-2 | Synthesis-Rollen in ROLE_MODEL_DEFAULTS eintragen | mittel | P1 | Offen |
+| P1-3 | `input_artifacts` runtime-wirksam machen oder entfernen | mittel | P1 | Offen |
+| P1-4 | `current_payload` Overwrite mit Regressionsschutz absichern | niedrig-mittel | P1 | Offen |
+| P1-5 | Preflight-Ziel sauber trennen (core vs. runtime readiness) | niedrig-mittel | P1 | Offen |
+| P2-1 | `CrossDomainStrategicAnalyst` vollstaendig entfernen | niedrig-mittel | P2 | Offen |
+| P2-2 | Blocked-Artifact als Pydantic-Modell formalisieren | niedrig | P2 | Offen |
+| P2-3 | DAG-Linter Phase-Kompatibilitaet pruefen | niedrig | P2 | Offen |
+| P2-4 | Synthesis Extra-Felder bereinigen (Schema != Agent-Output) | niedrig | P2 | Offen |
+| P2-5 | `_synthesis_admission` Marker durch Envelope-Konsum ersetzen | niedrig | P2 | Offen |
+| P2-6 | Kanonische Dedup-Keys / Merge-Policy / StrEnum / mypy / CI | niedrig | P2 | Offen |
 
 ---
 
-## R1 — `_synthesis_admission` Marker durch Envelope-Konsum ersetzen
+## P0-1 — `department_packages` Shape eindeutig machen
 
-**Herkunft:** F3 Architektur-Review Punkt 2  
-**Severity:** mittel  
-**Prioritaet:** P1
+**Severity:** kritisch  
+**Prioritaet:** P0
 
 ### Finding
-`pipeline_runner.py` liest `_synthesis_admission` aus dem Synthesis-Dict. Gleichzeitig existiert das Envelope-Modell `{admission, raw_synthesis, admitted_synthesis}` in `department_packages`. Doppelte Wahrheit.
+
+`department_packages` hat je nach Kontext eine andere Shape:
+
+| Stelle | Shape | Erwartet |
+|--------|-------|----------|
+| `supervisor_loop.py` | Admission-Envelope `{admission, raw_package, admitted_payload}` | Envelope |
+| `ShortTermMemoryStore.store_department_package()` | Raw department package (via `lead.py`) | Raw |
+| `follow_up.py` | Liest aus Run-Brain → raw | Raw |
+| `synthesis_department.py` | Bekommt Envelopes, liest aber `package.get("report_segment")` | Raw erwartet, Envelope geliefert |
+| `build_report_package()` | Liest `package.get("visual_focus")` | Raw erwartet, Envelope geliefert |
+
+Das ist der zentrale Architekturdefekt: gleicher Name, unterschiedliche Shapes, unterschiedliche Semantik.
 
 ### Patch-Sequenz
-1. `pipeline_runner.py`: Synthesis-Admission aus `department_packages["SynthesisDepartment"]["admission"]["decision"]` lesen statt aus `sections["synthesis"]["_synthesis_admission"]`
-2. `supervisor_loop.py`: `_synthesis_admission` Marker-Injection entfernen
-3. Test: `test_pipeline_runner_reads_synthesis_from_envelope`
+
+1. **Entscheidung treffen:** Zwei getrennte Namen einfuehren:
+   - `admission_envelopes` — Supervisor-Loop-Ergebnis mit Admission-Metadata
+   - `raw_department_packages` — Department-Ergebnis ohne Admission-Wrapper (fuer Memory, Follow-up)
+2. `supervisor_loop.py`: Return-Typ und interne Variable umbenennen
+3. `pipeline_runner.py`: Beide Varianten korrekt konsumieren
+4. `synthesis_department.py`: Explizit `raw_package` aus Envelope extrahieren
+5. `build_report_package()`: Explizit `raw_package` oder `admitted_payload` lesen
+6. `ShortTermMemoryStore`: Weiterhin raw Packages speichern (kein Envelope im Run-Brain)
+7. Tests: Shape-Assertions fuer beide Varianten
 
 ### Akzeptanzkriterien
-- `_synthesis_admission` existiert nicht mehr als Payload-Feld
-- Downstream liest ausschliesslich aus dem Envelope
+- Kein Code liest `department_packages` ohne zu wissen ob es Envelope oder Raw ist
+- Zwei klar getrennte Variablen/Parameter
+- Synthesis und Report lesen korrekt
 
 ---
 
-## R2 — `needs_contract_review` Judge-Eskalation verdrahten
+## P0-2 — Synthesis-Consumption fixen
 
-**Herkunft:** F4 Restpunkt 1  
+**Severity:** kritisch  
+**Prioritaet:** P0
+
+### Finding
+
+`synthesis_department.py` liest Department-Packages im Raw-Format, bekommt aber Envelopes:
+
+```python
+# Erwartet:
+package.get("report_segment")
+# Bekommt (Envelope):
+{"admission": {...}, "raw_package": {...}, "admitted_payload": {...}}
+```
+
+Betroffen:
+- `read_report_segment()` → liest `report_segment` aus Envelope statt aus `raw_package`
+- `available_segments` → zaehlt falsch
+- `dept_confidences` → liest falsch
+- `request_department_followup()` → schreibt `report_segment` direkt auf Envelope-Objekt (Shape-Mischen)
+
+Ergebnis: Synthesis faellt faktisch auf den precomputed `synthesis_context` zurueck.
+
+### Patch-Sequenz
+
+1. `synthesis_department.py`: Envelope-Aufloesung einbauen — `pkg.get("raw_package", pkg)` vor jedem Zugriff
+2. `request_department_followup()`: Follow-up-Ergebnis sauber in `raw_package` schreiben, nicht auf Envelope-Root
+3. Tests mit Envelope-Shape statt Raw-Shape
+
+### Akzeptanzkriterien
+- `read_report_segment()` findet Segments aus Envelope-wrapped Packages
+- `available_segments` zaehlt korrekt
+- Follow-up-Updates verschmieren nicht die Envelope-Struktur
+
+---
+
+## P0-3 — Regressionstests auf Envelope-Shape
+
+**Severity:** hoch  
+**Prioritaet:** P0
+
+### Finding
+
+Die Synthesis-Integrationstests bauen `department_packages` im Legacy/Raw-Format auf. Dadurch bleibt der Envelope-Bug unentdeckt.
+
+### Patch-Sequenz
+
+1. `tests/integration/test_ag2_runtime.py`: Synthesis-Tests mit Envelope-Shape statt Raw-Shape
+2. Neuer Test: `test_synthesis_reads_report_segment_from_envelope`
+3. Neuer Test: `test_build_report_package_reads_visual_focus_from_envelope`
+
+### Akzeptanzkriterien
+- Tests brechen wenn Synthesis Envelopes nicht korrekt aufloest
+- Kein Test baut department_packages im Raw-Format auf wenn der Runtime-Pfad Envelopes liefert
+
+---
+
+## P0-4 — `build_report_package()` an Envelope-Semantik anpassen
+
+**Severity:** hoch  
+**Prioritaet:** P0
+
+### Finding
+
+`build_report_package()` liest `package.get("visual_focus", [])` aus `department_packages`. Bekommt aber Envelopes → `visual_focus` ist leer.
+
+### Patch-Sequenz
+
+1. `src/orchestration/synthesis.py` → `build_report_package()`: Envelope-Aufloesung
+2. Test: `test_report_package_visual_focus_from_envelope`
+
+### Akzeptanzkriterien
+- `department_visual_focus` ist korrekt befuellt
+
+---
+
+## P1-1 — `needs_contract_review` autoritativ verdrahten
+
+**Herkunft:** F4 Restpunkt  
 **Severity:** mittel  
 **Prioritaet:** P1
 
 ### Finding
-`needs_contract_review` Flag wird auf `TaskArtifact` gesetzt, aber die automatische Judge-Eskalation bei Critic-Approval ist nicht verdrahtet.
+
+`needs_contract_review` Flag wird gesetzt, aber bei Critic-Approval geht der Pfad direkt in `lead_accepted()`.
 
 ### Patch-Sequenz
-1. `src/agents/lead.py` → `review_research()` Closure: Nach Critic-Approval pruefen ob `artifact.needs_contract_review == True`
-2. Wenn ja: automatisch `judge_decision(task_key)` aufrufen statt direkt als accepted weiterzuleiten
+
+1. `src/agents/lead.py` → `review_research()`: Nach Critic-Approval pruefen ob `artifact.needs_contract_review == True`
+2. Wenn ja: Nicht als accepted weiterleiten, sondern Judge eskalieren
 3. Test: `test_needs_contract_review_triggers_judge_escalation`
 
 ### Akzeptanzkriterien
-- Critic-Approval bei `needs_contract_review=True` fuehrt automatisch zu Judge-Eskalation
-- Judge-Entscheidung ist final (wie bei normaler Eskalation)
+- Critic-Approval bei `needs_contract_review=True` fuehrt zu Judge-Eskalation
 
 ---
 
-## R3 — DAG-Linter Phase-Kompatibilitaet pruefen
+## P1-2 — Synthesis-Rollen in ROLE_MODEL_DEFAULTS eintragen
 
-**Herkunft:** F4 Restpunkt 2  
-**Severity:** niedrig-mittel  
-**Prioritaet:** P1
-
-### Finding
-Der statische DAG-Linter prueft Existenz und Zyklenfreiheit, aber nicht ob Cross-Department-Dependencies mit der Phase-Architektur (parallel/sequential) kompatibel sind.
-
-### Patch-Sequenz
-1. `tests/smoke/test_preflight.py`: Neuer Test `test_cross_department_dependencies_are_phase_compatible`
-2. Definiere Phase-Ordnung: `{Company, Market}` parallel → `Buyer` sequential → `Contact` sequential
-3. Pruefe: Jede Cross-Department-Dependency zeigt nur auf ein Department das in einer frueheren oder gleichen Phase laeuft
-4. Pruefe: Keine Dependency von einem parallelen Department auf das andere parallele Department
-
-### Akzeptanzkriterien
-- Test schlaegt wenn eine Cross-Department-Dependency die Phase-Architektur verletzt
-- Bestehende Dependencies sind alle kompatibel
-
----
-
-## R4 — Follow-up-Pfad auf Envelope-Format umstellen
-
-**Herkunft:** F2 offener Punkt, F3 Architektur-Review Punkt 4  
+**Herkunft:** Audit Finding 10  
 **Severity:** mittel  
 **Prioritaet:** P1
 
 ### Finding
-`follow_up.py` liest `department_packages` aus dem Run-Brain. Nach F2 sind diese im Envelope-Format `{admission, raw_package, admitted_payload}`. Der Follow-up-Pfad muss das Envelope korrekt aufloesen.
+
+`SynthesisLead`, `SynthesisAnalyst`, `SynthesisCritic`, `SynthesisJudge` fehlen in `ROLE_MODEL_DEFAULTS` und `ROLE_STRUCTURED_MODEL_DEFAULTS`.
 
 ### Patch-Sequenz
-1. `src/orchestration/follow_up.py`: Alle Stellen die `department_packages[dept]` lesen auf Envelope-Aufloesung umstellen: `pkg.get("raw_package", pkg)` als Fallback
-2. Fuer Synthesis: `admitted_synthesis` statt `raw_synthesis` verwenden
-3. Test: `test_follow_up_reads_from_envelope_format`
-4. Test: `test_follow_up_never_uses_raw_synthesis_as_operative_source`
+
+1. `src/config/settings.py`: Alle vier Synthesis-Rollen eintragen
+2. Test: `test_all_agent_specs_have_model_defaults`
 
 ### Akzeptanzkriterien
-- Follow-up-Antworten basieren auf admitted Payloads, nicht auf raw Packages
-- Legacy-Format (pre-F2) wird als Fallback unterstuetzt
+- Jede Rolle in `AGENT_SPECS` hat einen Eintrag in `ROLE_MODEL_DEFAULTS`
 
 ---
 
-## R5 — Blocked-Artifact als Pydantic-Modell formalisieren
+## P1-3 — `input_artifacts` runtime-wirksam machen oder entfernen
 
-**Herkunft:** F3 Architektur-Review Punkt 3  
+**Herkunft:** Audit Finding  
+**Severity:** mittel  
+**Prioritaet:** P1
+
+### Finding
+
+`input_artifacts` wird in `use_cases.py` definiert und in `Assignment` transportiert, aber nie operativ genutzt. Der Worker bekommt nur `current_sections`, nicht die deklarierten Input-Artifacts.
+
+### Patch-Sequenz
+
+**Option A — Runtime-wirksam machen:**
+1. `lead.py` → `run_research()`: `input_artifacts` aus Assignment lesen
+2. Relevante Sections aus `current_sections` filtern und als expliziten Input uebergeben
+3. Worker erhaelt nur die deklarierten Inputs, nicht den gesamten Section-State
+
+**Option B — Aus Contract entfernen:**
+1. `use_cases.py`: `input_artifacts` Feld entfernen
+2. `task_router.py`: `Assignment.input_artifacts` entfernen
+3. Tests anpassen
+
+### Akzeptanzkriterien
+- Entweder: Worker erhaelt nur deklarierte Inputs
+- Oder: Feld existiert nicht mehr und suggeriert keine falsche Disziplin
+
+---
+
+## P1-4 — `current_payload` Overwrite mit Regressionsschutz
+
+**Herkunft:** Audit Finding 4  
+**Severity:** niedrig-mittel  
+**Prioritaet:** P1
+
+### Finding
+
+`lead.py` ueberschreibt `run_state.current_payload = dict(report["payload"])` nach jedem Worker-Run. Der Worker merged intern, aber es gibt keinen Regressionsschutz falls ein Worker unvollstaendig zurueckliefert.
+
+### Patch-Sequenz
+
+1. `lead.py`: Vor Overwrite pruefen ob der neue Payload mindestens die Felder des alten enthaelt
+2. Oder: `deep_merge` statt Overwrite verwenden
+3. Test: `test_current_payload_does_not_lose_fields_on_subsequent_task`
+
+### Akzeptanzkriterien
+- Ein zweiter Task-Run verliert keine Felder die der erste Task gesetzt hat
+
+---
+
+## P1-5 — Preflight-Ziel sauber trennen
+
+**Herkunft:** Audit Finding 1  
+**Severity:** niedrig-mittel  
+**Prioritaet:** P1
+
+### Finding
+
+`preflight.py` vermischt zwei Ziele: leichter Core-Check (ohne AG2) und voller Runtime-Readiness-Check (mit AG2).
+
+### Patch-Sequenz
+
+1. `preflight.py`: Zwei Modi oder zwei Stufen
+   - Stufe 1: Core (Packages, .env, API-Key, pure imports) — ohne AG2
+   - Stufe 2: Runtime (AG2 importierbar, Streamlit erreichbar) — mit AG2
+2. Stufe 1 muss auch ohne AG2-Installation durchlaufen
+
+### Akzeptanzkriterien
+- `python preflight.py --core` laeuft ohne AG2
+- `python preflight.py` laeuft mit AG2
+
+---
+
+## P2-1 — `CrossDomainStrategicAnalyst` vollstaendig entfernen
+
+**Herkunft:** Audit + F6  
 **Severity:** niedrig-mittel  
 **Prioritaet:** P2
 
 ### Finding
-Blocked-Artifacts werden als ad-hoc Dicts erzeugt. Pflichtfelder (`section_status`, `reason`, `open_questions`, `sources`, `generation_mode`) sind nicht formal definiert.
+
+Geisterrolle die noch in Model-Defaults, Tool-Policy, Memory-Registry und Config-Summary haengt.
 
 ### Patch-Sequenz
+
+1. `settings.py`: Aus ROLE_MODEL_DEFAULTS und ROLE_STRUCTURED_MODEL_DEFAULTS entfernen
+2. `tool_policy.py`: Aus BASE_TOOL_POLICY und TASK_TOOL_OVERRIDES entfernen
+3. `consolidation.py`: Aus MEMORY_ROLE_STATUS entfernen
+4. `settings.py` → `summarize_runtime_models()`: Referenz entfernen
+5. Test: `test_no_crossdomainstrategicanalyst_in_codebase`
+
+### Akzeptanzkriterien
+- Kein Code referenziert `CrossDomainStrategicAnalyst` mehr
+
+---
+
+## P2-2 — Blocked-Artifact als Pydantic-Modell formalisieren
+
+**Herkunft:** F3 Architektur-Review  
+**Severity:** niedrig  
+**Prioritaet:** P2
+
+### Patch-Sequenz
+
 1. `src/orchestration/contracts.py` oder `src/models/schemas.py`: `BlockedSectionArtifact` Pydantic-Modell
-2. `src/orchestration/supervisor_loop.py`: `_blocked_section_artifact()` gibt Pydantic-Instanz zurueck
-3. `src/pipeline_runner.py`: Rejected-Synthesis-Pfad nutzt dasselbe Modell
-4. Test: `test_blocked_artifact_has_canonical_schema`
-
-### Akzeptanzkriterien
-- Alle Blocked-Artifacts sind Pydantic-validiert
-- UI/Report/Follow-up koennen sich auf stabile Pflichtfelder verlassen
+2. `supervisor_loop.py` + `pipeline_runner.py`: Nutzen das Modell
+3. Test: `test_blocked_artifact_has_canonical_schema`
 
 ---
 
-## R6 — Kanonische Dedup-Keys pro Sammlung
+## P2-3 — DAG-Linter Phase-Kompatibilitaet
 
-**Herkunft:** F5 Follow-up 1  
+**Herkunft:** F4 Restpunkt  
+**Severity:** niedrig  
+**Prioritaet:** P2
+
+### Patch-Sequenz
+
+1. `tests/smoke/test_preflight.py`: Test der Phase-Ordnung gegen Cross-Department-Dependencies prueft
+2. Phase-Ordnung: `{Company, Market}` parallel → `Buyer` sequential → `Contact` sequential
+
+---
+
+## P2-4 — Synthesis Extra-Felder bereinigen
+
+**Herkunft:** Audit  
 **Severity:** niedrig  
 **Prioritaet:** P2
 
 ### Finding
-`_dedup_safe()` nutzt JSON-Serialisierung als universellen Dedup-Key. Nicht optimal fuer Sammlungen mit natuerlichen Identifiern.
+
+`finalize_synthesis()` schreibt Felder (`opportunity_assessment`, `negotiation_relevance`, `back_requests_issued`, `department_confidences`) die das Synthesis-Schema nicht definiert. Pydantic verwirft sie still.
 
 ### Patch-Sequenz
-1. `src/memory/short_term_store.py`: `_dedup_sources(items)` mit URL als Key
-2. `_dedup_worker_reports(items)` mit `(department, task_key, attempt)` als Key
-3. `snapshot()` nutzt spezialisierte Dedup-Funktionen statt `_dedup_safe()` fuer Sources und Worker-Reports
-4. Test: `test_source_dedup_by_url`
 
-### Akzeptanzkriterien
-- Sources werden nach normalisierter URL dedupliziert
-- Worker-Reports nach (department, task_key, attempt)
+1. Entweder: Schema erweitern um die Felder die tatsaechlich gebraucht werden
+2. Oder: Agent-Output auf Schema-konforme Felder beschraenken
+3. Test: `test_synthesis_output_matches_schema`
 
 ---
 
-## R7 — Merge-Konflikt-Policy (fail-fast vs. warn)
+## P2-5 — `_synthesis_admission` Marker durch Envelope-Konsum ersetzen
 
-**Herkunft:** F5 Follow-up 2  
+**Herkunft:** F3 Architektur-Review  
 **Severity:** niedrig  
 **Prioritaet:** P2
 
-### Finding
-`merge_from()` loggt Warning bei Konflikten. Fuer Tests/Preflight waere fail-fast besser.
-
 ### Patch-Sequenz
-1. `src/memory/short_term_store.py`: `merge_from(other, *, strict=False)` Parameter
-2. `strict=True`: raise ValueError bei Konflikten
-3. `strict=False`: Warning + Last-Writer-Wins (aktuelles Verhalten)
-4. Tests koennen `strict=True` nutzen
-5. Test: `test_merge_strict_raises_on_conflict`
 
-### Akzeptanzkriterien
-- `strict=True` in Tests faengt unerwartete Konflikte sofort ab
-- Production-Code nutzt weiterhin `strict=False`
+1. `pipeline_runner.py`: Admission aus Envelope lesen statt aus Marker-Feld
+2. `supervisor_loop.py`: Marker-Injection entfernen
+3. Wird durch P0-1 moeglicherweise obsolet
 
 ---
 
-## R8 — Kanonische Vokabular-Mengen als StrEnum
+## P2-6 — Sammel-Haertungen
 
-**Herkunft:** F7 Follow-up  
+**Herkunft:** Diverse Follow-ups aus F5/F7/F8/F10  
 **Severity:** niedrig  
 **Prioritaet:** P2
 
-### Finding
-`TASK_LIFECYCLE_STATUSES`, `ADMISSION_DECISIONS`, `TaskDecisionOutcome` sind `frozenset[str]` / `Literal`. StrEnum waere typsicherer.
-
-### Patch-Sequenz
-1. `src/orchestration/contracts.py`: `TaskDecisionOutcome` als `StrEnum`
-2. `TaskLifecycleStatus` als `StrEnum`
-3. `AdmissionDecision` als `StrEnum`
-4. Alle Konsumenten auf Enum-Vergleich umstellen
-5. Tests anpassen
-
-### Akzeptanzkriterien
-- Typchecker erkennt falsche Status-Strings zur Entwicklungszeit
-- Keine frei eingetippten Strings mehr in Runtime-Code
-
----
-
-## R9 — Statische Typpruefung (mypy/pyright) einfuehren
-
-**Herkunft:** F10 Follow-up  
-**Severity:** niedrig  
-**Prioritaet:** P2
-
-### Finding
-TypedDicts und NamedTuples aus F10 sind die Basis, aber kein statischer Type-Check-Step existiert.
-
-### Patch-Sequenz
-1. `pyproject.toml`: mypy oder pyright Konfiguration
-2. Mindestens `src/orchestration/contracts.py`, `src/agents/supervisor.py`, `src/orchestration/supervisor_loop.py` muessen clean durchlaufen
-3. CI-Integration (optional)
-4. Bekannte Typ-Fehler als `# type: ignore` mit Ticket-Referenz markieren
-
-### Akzeptanzkriterien
-- `mypy src/orchestration/contracts.py` laeuft ohne Fehler
-- Signatur-Drift wird automatisch erkannt
-
----
-
-## R10 — CI-Pipeline technisch explizit festziehen
-
-**Herkunft:** F8 Follow-up 1  
-**Severity:** niedrig  
-**Prioritaet:** P2
-
-### Finding
-`TESTING.md` formuliert die CI-Regel normativ, aber keine CI-Konfigurationsdatei ist sichtbar.
-
-### Patch-Sequenz
-1. `.github/workflows/test.yml` oder aequivalent: `pytest tests/` explizit
-2. Optional: Separate Stage fuer `scripts/manual_validation/`
-3. Test: CI-Config referenziert `tests/` als einzige Testwurzel
-
-### Akzeptanzkriterien
-- CI fuehrt `pytest tests/` aus, nicht bare `pytest`
-- Dokumentation und CI stimmen ueberein
-
----
-
-## R11 — AGENT_SPECS semantisch rahmen / aufteilen
-
-**Herkunft:** F9 Follow-up 1  
-**Severity:** niedrig  
-**Prioritaet:** P2
-
-### Finding
-`AGENT_SPECS` enthaelt sowohl echte Runtime-Agenten als auch UI-Schritte ohne Agent-Runtime (ReportWriter).
-
-### Patch-Sequenz
-1. Entweder: `AGENT_SPECS` dokumentieren als "pipeline step / UI role registry"
-2. Oder: Aufteilen in `RUNTIME_AGENT_SPECS` + `PIPELINE_STEP_SPECS`
-3. `emit_message(agent=...)` langfristig auf `component=` oder `step=` fuer Nicht-Agenten
-
-### Akzeptanzkriterien
-- Klar dokumentiert was ein Agent ist und was ein Pipeline-Schritt
-- Keine Verwechslung zwischen Runtime-Agent und UI-Label
-
----
-
-## R12 — Drawio-Architekturdiagramm aktualisieren
-
-**Herkunft:** F9 Follow-up  
-**Severity:** niedrig  
-**Prioritaet:** P3
-
-### Finding
-Das Drawio-Diagramm zeigt noch ReportWriter als Agent. Nach F9 ist es eine Rendering-Komponente.
-
-### Patch-Sequenz
-1. `docs/updated_runtime_architecture.drawio`: ReportWriter als "Report Rendering" statt Agent
-2. Admission-Gates (F2/F3) im Diagramm darstellen
-3. Memory-Isolation (F5) im Diagramm darstellen
-
-### Akzeptanzkriterien
-- Diagramm und Code stimmen ueberein
-
----
-
-## R13 — `definitions.py` Kompatibilitaets-Shim entfernen
-
-**Herkunft:** F1 offener Punkt  
-**Severity:** niedrig  
-**Prioritaet:** P3
-
-### Finding
-`src/agents/definitions.py` existiert als Kompatibilitaets-Shim der auf `specs.py` + `runtime_factory.py` weiterleitet. Keine bekannten Konsumenten mehr.
-
-### Patch-Sequenz
-1. Pruefen: `findstr /s "definitions" src/ ui/ tests/` — keine aktiven Imports
-2. Datei entfernen
-3. Test: `test_no_definitions_import` Guard
-
-### Akzeptanzkriterien
-- `definitions.py` existiert nicht mehr
-- Kein Import bricht
+Einzelpunkte:
+- Kanonische Dedup-Keys pro Sammlung (F5) — Sources bereits URL-basiert in `snapshot()`, Worker-Reports noch nicht
+- Merge-Konflikt-Policy strict-Mode (F5)
+- StrEnum statt frozenset fuer Vokabular (F7)
+- mypy/pyright Typ-Check-Step (F10)
+- CI-Pipeline explizit festziehen (F8)
+- AGENT_SPECS semantisch rahmen (F9)
+- Drawio-Diagramm aktualisieren (F9)
+- `definitions.py` Shim entfernen (F1)
 
 ---
 
 ## Bearbeitungsreihenfolge
 
-### Phase 1 — P1
-1. R1 — Synthesis Envelope-Konsum
-2. R2 — Judge-Eskalation verdrahten
-3. R3 — DAG-Linter Phase-Kompatibilitaet
-4. R4 — Follow-up Envelope-Format
+### Phase 1 — P0 (Shape-Konsistenz)
+1. P0-1 — department_packages Shape eindeutig machen
+2. P0-2 — Synthesis-Consumption fixen
+3. P0-3 — Regressionstests auf Envelope-Shape
+4. P0-4 — build_report_package() fixen
 
-### Phase 2 — P2
-5. R5 — Blocked-Artifact Pydantic-Modell
-6. R6 — Kanonische Dedup-Keys
-7. R7 — Merge-Konflikt-Policy
-8. R8 — StrEnum Vokabular
-9. R9 — Statische Typpruefung
-10. R10 — CI-Pipeline
-11. R11 — AGENT_SPECS Semantik
+### Phase 2 — P1 (Contract-Haertung)
+5. P1-1 — needs_contract_review verdrahten
+6. P1-2 — Synthesis-Rollen in Defaults
+7. P1-3 — input_artifacts entscheiden
+8. P1-4 — current_payload Regressionsschutz
+9. P1-5 — Preflight trennen
 
-### Phase 3 — P3
-12. R12 — Drawio-Diagramm
-13. R13 — definitions.py Shim entfernen
+### Phase 3 — P2 (Bereinigung)
+10. P2-1 — CrossDomainStrategicAnalyst entfernen
+11. P2-2 — Blocked-Artifact Modell
+12. P2-3 — DAG-Linter Phase-Compat
+13. P2-4 — Synthesis Extra-Felder
+14. P2-5 — Synthesis Marker → Envelope
+15. P2-6 — Sammel-Haertungen

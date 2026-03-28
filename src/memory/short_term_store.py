@@ -25,21 +25,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-
-def _dedup_safe(items: list) -> list:
-    """Deduplicate a list whose items may be dicts (unhashable)."""
-    seen: set[str] = set()
-    result = []
-    for item in items:
-        key = (
-            json.dumps(item, sort_keys=True, ensure_ascii=False)
-            if isinstance(item, (dict, list))
-            else str(item)
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-    return result
+from src.utils import dedup_safe as _dedup_safe
 
 
 @dataclass

@@ -31,24 +31,10 @@ from typing import Any
 
 from src.exporters.json_export import export_follow_up
 from src.models.schemas import FollowUpAnswer
+from src.orchestration.envelope import resolve_open_questions, resolve_raw_package
+from src.utils import dedup_safe as _dedup_safe
 
 logger = logging.getLogger(__name__)
-
-
-def _dedup_safe(items: list) -> list:
-    """Deduplicate a list whose items may be dicts (unhashable)."""
-    seen: set[str] = set()
-    result = []
-    for item in items:
-        key = (
-            json.dumps(item, sort_keys=True, ensure_ascii=False)
-            if isinstance(item, (dict, list))
-            else str(item)
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-    return result
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNS_DIR = ROOT / "artifacts" / "runs"
@@ -286,17 +272,19 @@ def _synthesis_answer(
         .get("department_packages", {})
         .get("SynthesisDepartment", {})
     )
+    # RF2-1: read from raw_package via resolver, not from envelope root
+    raw = resolve_raw_package(package)
     evidence = [
         synthesis.get("executive_summary", ""),
         synthesis.get("opportunity_assessment_summary", ""),
-        package.get("opportunity_assessment", ""),
+        raw.get("opportunity_assessment", ""),
         *synthesis.get("next_steps", [])[:2],
     ]
     unresolved = synthesis.get("key_risks", [])[:3]
     answer = (
         f"Synthesis follow-up for '{question}': "
-        f"{package.get('executive_summary', synthesis.get('executive_summary', 'n/v'))} "
-        f"Opportunity: {package.get('opportunity_assessment', synthesis.get('opportunity_assessment_summary', 'n/v'))}."
+        f"{raw.get('executive_summary', synthesis.get('executive_summary', 'n/v'))} "
+        f"Opportunity: {raw.get('opportunity_assessment', synthesis.get('opportunity_assessment_summary', 'n/v'))}."
     )
     return answer, [item for item in evidence if item], unresolved
 
@@ -348,7 +336,7 @@ def answer_follow_up(
         answer, evidence, unresolved = _buyer_answer(question, pipeline_data, run_context)
     elif route == "ContactDepartment":
         answer, evidence, unresolved = _contact_answer(question, pipeline_data, run_context)
-    elif route in ("SynthesisDepartment", "CrossDomainStrategicAnalyst"):
+    elif route == "SynthesisDepartment":
         answer, evidence, unresolved = _synthesis_answer(question, pipeline_data, run_context)
     else:
         route = "CompanyDepartment"

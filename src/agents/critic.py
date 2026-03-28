@@ -8,6 +8,11 @@ Rule check types
 non_placeholder  — field value must not be "n/v" and must not be empty/None
 min_items        — field must be a sequence with at least ``value`` items
 min_length       — field must be a string with at least ``value`` characters
+nested_field_non_placeholder
+                 — at least ``value`` items in the list at ``field`` must have
+                   a non-placeholder value at the sub-field named in ``sub_field``.
+                   Example: field="peer_competitors.companies", sub_field="relevance",
+                   value=2 → at least 2 company dicts must have a real relevance string.
 
 Dot-notation field paths (e.g. "economic_situation.assessment") are resolved
 by walking the payload dict level by level.
@@ -25,22 +30,7 @@ from typing import Any
 from src.app.use_cases import get_task_validation_rules
 from src.config import get_role_model_selection
 from src.orchestration.tool_policy import resolve_allowed_tools
-
-
-def _dedup_safe(items: list) -> list:
-    """Deduplicate a list whose items may be dicts (unhashable)."""
-    seen: set[str] = set()
-    result = []
-    for item in items:
-        key = (
-            json.dumps(item, sort_keys=True, ensure_ascii=False)
-            if isinstance(item, (dict, list))
-            else str(item)
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-    return result
+from src.utils import dedup_safe as _dedup_safe
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +70,21 @@ def _check_min_length(value: Any, threshold: int) -> bool:
     return len(value.strip()) >= threshold
 
 
+def _check_nested_field_non_placeholder(value: Any, sub_field: str, threshold: int) -> bool:
+    """Check that at least *threshold* items in *value* have a non-placeholder *sub_field*."""
+    if not isinstance(value, (list, tuple)):
+        return False
+    count = 0
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if _check_non_placeholder(item.get(sub_field)):
+            count += 1
+            if count >= threshold:
+                return True
+    return False
+
+
 def _evaluate_rule(rule: dict[str, Any], payload: dict[str, Any]) -> bool:
     """Return True if the rule passes for the given payload."""
     check = rule.get("check", "")
@@ -93,6 +98,9 @@ def _evaluate_rule(rule: dict[str, Any], payload: dict[str, Any]) -> bool:
         return _check_min_items(value, threshold)
     if check == "min_length":
         return _check_min_length(value, threshold)
+    if check == "nested_field_non_placeholder":
+        sub_field = rule.get("sub_field", "")
+        return _check_nested_field_non_placeholder(value, sub_field, threshold)
     # Unknown check type — fail safe
     return False
 

@@ -24,21 +24,7 @@ import json
 import re
 from typing import Any
 
-
-def _dedup_safe(items: list) -> list:
-    """Deduplicate a list whose items may be dicts (unhashable)."""
-    seen: set[str] = set()
-    result = []
-    for item in items:
-        key = (
-            json.dumps(item, sort_keys=True, ensure_ascii=False)
-            if isinstance(item, (dict, list))
-            else str(item)
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-    return result
+from src.utils import dedup_safe as _dedup_safe
 
 # ---------------------------------------------------------------------------
 # Company-name scrubbing helpers
@@ -134,9 +120,8 @@ MEMORY_ROLE_STATUS: dict[str, str] = {
     "SynthesisLead": "pending",
     "SynthesisCritic": "pending",
     "SynthesisJudge": "pending",
-    # excluded — deliberately outside memory system (pending F9)
+    # excluded — deliberately outside memory system
     "ReportWriter": "excluded",
-    "CrossDomainStrategicAnalyst": "excluded",
 }
 
 # Retrieval policy: only active roles are loaded at run start.
@@ -174,6 +159,7 @@ def consolidate_role_patterns(
 
     short_term_memory = run_context.get("short_term_memory", {})
     industry_hint = pipeline_data.get("company_profile", {}).get("industry", "n/v")
+    task_statuses = short_term_memory.get("task_statuses", {})
 
     # Sanitise industry_hint: keep only generic industry label, strip company refs
     safe_industry = _scrub_company_from_query(str(industry_hint))[:60] if industry_hint else "n/v"
@@ -186,9 +172,18 @@ def consolidate_role_patterns(
         if isinstance(source, dict)
     })
 
+    # Task-level filter: only include patterns from accepted tasks
+    accepted_task_keys = {
+        k for k, s in task_statuses.items() if s == "accepted"
+    }
+
     # --- Researcher strategies per role ---
+    # Only include queries from tasks that were accepted
     grouped_queries: dict[str, list[str]] = {}
     for report in worker_reports:
+        task_key = str(report.get("task_key", ""))
+        if task_key and task_key not in accepted_task_keys:
+            continue
         role = str(report.get("worker", "researcher"))
         raw_queries = list(report.get("queries_used", []))
         grouped_queries.setdefault(role, []).extend(raw_queries)
@@ -214,12 +209,15 @@ def consolidate_role_patterns(
             "score": 1.0,
         })
 
-    # --- Critic heuristics ---
+    # --- Critic heuristics (only from accepted tasks) ---
     critic_reviews: dict[str, dict[str, Any]] = short_term_memory.get("critic_reviews", {})
     if critic_reviews:
         for critic_role in ["CompanyCritic", "MarketCritic", "BuyerCritic", "ContactCritic", "SynthesisCritic"]:
             dept_prefix = critic_role.replace("Critic", "").lower()
-            dept_reviews = {k: v for k, v in critic_reviews.items() if dept_prefix in k.lower()}
+            dept_reviews = {
+                k: v for k, v in critic_reviews.items()
+                if dept_prefix in k.lower() and k in accepted_task_keys
+            }
             if not dept_reviews:
                 continue
             # Aggregate heuristics: what fraction of core rules typically pass?

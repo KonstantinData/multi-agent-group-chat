@@ -4,21 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
-def _dedup_safe(items: list) -> list:
-    """Deduplicate a list whose items may be dicts (unhashable)."""
-    seen: set[str] = set()
-    result = []
-    for item in items:
-        key = (
-            json.dumps(item, sort_keys=True, ensure_ascii=False)
-            if isinstance(item, (dict, list))
-            else str(item)
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(item)
-    return result
+from src.orchestration.envelope import resolve_visual_focus
+from src.utils import dedup_safe as _dedup_safe
 
 
 NEGATIVE_PREFIXES = ("no ", "not ", "none", "kein", "keine", "keinen")
@@ -35,6 +22,29 @@ def _positive_signals(items: list[str]) -> list[str]:
             continue
         positives.append(text)
     return positives
+
+
+def _is_genuine_gap(text: str) -> bool:
+    """Filter noise entries from open_gaps: bare field names, internal labels, etc."""
+    t = text.strip()
+    if not t:
+        return False
+    if " " not in t:                           # bare field names like "coverage_quality"
+        return False
+    if "." in t and " " not in t.split(".")[0]:  # dotted paths like "economic_situation.inventory_signals"
+        return False
+    tl = t.lower()
+    if tl.startswith("no supporting source"):
+        return False
+    if tl.startswith("no inventory signals found"):
+        return False
+    if tl.startswith("coverage quality not assessed"):
+        return False
+    if tl.startswith("supporting page excerpts"):
+        return False
+    if tl.startswith("no external search"):
+        return False
+    return True
 
 
 def build_quality_review(memory_snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -54,10 +64,14 @@ def build_quality_review(memory_snapshot: dict[str, Any]) -> dict[str, Any]:
         evidence_health = "high"
     elif len(accepted_backlog) >= 6 and len(external_sources) >= 1:
         evidence_health = "medium"
+
+    raw_gaps = _dedup_safe([*open_questions, *unresolved_points])
+    filtered_gaps = [g for g in raw_gaps if _is_genuine_gap(g)]
+
     return {
         "validated_agents": ["Supervisor", "CompanyDepartment", "MarketDepartment", "BuyerDepartment", "ContactDepartment", *sorted(approved_tasks)],
         "evidence_health": evidence_health,
-        "open_gaps": _dedup_safe([*open_questions, *unresolved_points]),
+        "open_gaps": filtered_gaps,
         "recommendations": [
             "Validate likely buyers against CRM before the meeting.",
             "Confirm economic pressure signals with fresher external evidence where possible.",
@@ -71,7 +85,7 @@ def build_quality_review(memory_snapshot: dict[str, Any]) -> dict[str, Any]:
                 "summary": question,
                 "recommendation": "Use follow-up mode or customer discovery to close this gap.",
             }
-            for question in _dedup_safe(open_questions)[:5]
+            for question in filtered_gaps[:5]
         ],
     }
 
@@ -282,7 +296,7 @@ def build_report_package(
         "report_title": f"Liquisto Briefing - {company.get('company_name', 'n/v')}",
         "executive_summary": synthesis.get("executive_summary", "n/v"),
         "department_visual_focus": {
-            name: package.get("visual_focus", [])
+            name: resolve_visual_focus(package)
             for name, package in department_packages.items()
         },
         "recommended_sections": [

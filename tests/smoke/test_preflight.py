@@ -171,3 +171,138 @@ def test_acceptance_methods_return_typed_dicts():
     assert 'accepted_tasks' in DepartmentAcceptanceResult.__annotations__
     assert 'decision' in SynthesisAcceptanceResult.__annotations__
     assert 'generation_mode' in SynthesisAcceptanceResult.__annotations__
+
+
+# ---------------------------------------------------------------------------
+# P2-3: DAG / Phase invariants — config-driven
+# ---------------------------------------------------------------------------
+
+# Canonical phase configuration — single source of truth for test assertions.
+# If the runtime phasing changes, update this mapping and the tests will catch drift.
+_PHASE_CONFIG = {
+    "parallel": {"CompanyDepartment", "MarketDepartment"},
+    "sequential": ["BuyerDepartment", "ContactDepartment"],
+}
+
+_DEPARTMENT_TASK_OWNERSHIP = {
+    "CompanyDepartment": {"company_fundamentals", "economic_commercial_situation", "product_asset_scope"},
+    "MarketDepartment": {"market_situation", "repurposing_circularity", "analytics_operational_improvement"},
+    "BuyerDepartment": {"peer_companies", "monetization_redeployment"},
+    "ContactDepartment": {"contact_discovery", "contact_qualification"},
+    "SynthesisDepartment": {"liquisto_opportunity_assessment", "negotiation_relevance"},
+}
+
+
+def test_phase_invariants_match_backlog():
+    """P2-3: All research tasks must belong to exactly one department."""
+    from src.app.use_cases import STANDARD_TASK_BACKLOG
+    all_owned = set()
+    for dept, keys in _DEPARTMENT_TASK_OWNERSHIP.items():
+        overlap = all_owned & keys
+        assert not overlap, f"Tasks {overlap} assigned to multiple departments"
+        all_owned |= keys
+    backlog_keys = {t["task_key"] for t in STANDARD_TASK_BACKLOG}
+    unowned = backlog_keys - all_owned
+    assert not unowned, f"Tasks {unowned} not assigned to any department in phase config"
+
+
+def test_parallel_departments_have_no_cross_dependencies():
+    """P2-3: Parallel departments must not depend on each other's tasks."""
+    from src.app.use_cases import STANDARD_TASK_BACKLOG
+    parallel_tasks = set()
+    for dept in _PHASE_CONFIG["parallel"]:
+        parallel_tasks |= _DEPARTMENT_TASK_OWNERSHIP.get(dept, set())
+    for task in STANDARD_TASK_BACKLOG:
+        if task["task_key"] in parallel_tasks:
+            for dep in task["depends_on"]:
+                # dep must be either in the same department or have no department (root)
+                dep_dept = None
+                for d, keys in _DEPARTMENT_TASK_OWNERSHIP.items():
+                    if dep in keys:
+                        dep_dept = d
+                        break
+                if dep_dept and dep_dept in _PHASE_CONFIG["parallel"]:
+                    task_dept = None
+                    for d, keys in _DEPARTMENT_TASK_OWNERSHIP.items():
+                        if task["task_key"] in keys:
+                            task_dept = d
+                            break
+                    assert dep_dept == task_dept, (
+                        f"Parallel cross-dependency: {task['task_key']} ({task_dept}) "
+                        f"depends on {dep} ({dep_dept})"
+                    )
+
+
+def test_sequential_departments_respect_order():
+    """P2-3: Sequential departments must only depend on earlier phases."""
+    from src.app.use_cases import STANDARD_TASK_BACKLOG
+    sequential = _PHASE_CONFIG["sequential"]
+    for i, dept in enumerate(sequential):
+        dept_tasks = _DEPARTMENT_TASK_OWNERSHIP.get(dept, set())
+        for task in STANDARD_TASK_BACKLOG:
+            if task["task_key"] not in dept_tasks:
+                continue
+            for dep in task["depends_on"]:
+                # dep must not be in a later sequential department
+                for j in range(i + 1, len(sequential)):
+                    later_dept = sequential[j]
+                    later_tasks = _DEPARTMENT_TASK_OWNERSHIP.get(later_dept, set())
+                    assert dep not in later_tasks, (
+                        f"Backward dependency: {task['task_key']} ({dept}) "
+                        f"depends on {dep} ({later_dept}) which runs later"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# P2-1: Guard — no CrossDomainStrategicAnalyst references remain
+# ---------------------------------------------------------------------------
+
+def test_no_cross_domain_strategic_analyst_references():
+    """P2-1: CrossDomainStrategicAnalyst must not appear in any active registry."""
+    from src.config.settings import ROLE_MODEL_DEFAULTS, ROLE_STRUCTURED_MODEL_DEFAULTS
+    from src.orchestration.tool_policy import BASE_TOOL_POLICY, TASK_TOOL_OVERRIDES
+    from src.memory.consolidation import MEMORY_ROLE_STATUS
+
+    assert "CrossDomainStrategicAnalyst" not in ROLE_MODEL_DEFAULTS
+    assert "CrossDomainStrategicAnalyst" not in ROLE_STRUCTURED_MODEL_DEFAULTS
+    assert "CrossDomainStrategicAnalyst" not in BASE_TOOL_POLICY
+    for key in TASK_TOOL_OVERRIDES:
+        assert "CrossDomainStrategicAnalyst" not in key[0]
+    assert "CrossDomainStrategicAnalyst" not in MEMORY_ROLE_STATUS
+
+
+# ---------------------------------------------------------------------------
+# P1-2: Every AGENT_SPECS role must resolve to a model default
+# ---------------------------------------------------------------------------
+
+def test_all_agent_specs_have_model_defaults():
+    """P1-2: Every role in AGENT_SPECS must be resolvable in model defaults."""
+    from src.agents.specs import AGENT_SPECS
+    from src.config.settings import get_role_model_selection
+    for role_name in AGENT_SPECS:
+        chat, structured = get_role_model_selection(role_name)
+        assert chat, f"{role_name} has no chat model"
+        assert structured, f"{role_name} has no structured model"
+
+
+# ---------------------------------------------------------------------------
+# P1-3: Guard — input_artifacts must not exist in task backlog
+# ---------------------------------------------------------------------------
+
+def test_no_input_artifacts_in_backlog():
+    """P1-3: input_artifacts field must not exist in STANDARD_TASK_BACKLOG."""
+    from src.app.use_cases import STANDARD_TASK_BACKLOG
+    for task in STANDARD_TASK_BACKLOG:
+        assert "input_artifacts" not in task, (
+            f"Task '{task['task_key']}' still has input_artifacts — "
+            "field was removed in P1-3"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P0-5: Envelope module must be importable without AG2
+# ---------------------------------------------------------------------------
+
+def test_envelope_module_importable():
+    """P0-5: envelope.py must be importable as a pure module."""
+    import src.orchestration.envelope

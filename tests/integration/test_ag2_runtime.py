@@ -416,6 +416,5 @@ class TestAssignmentContractFields:
         )
         assert a.depends_on == ()
         assert a.run_condition is None
-        assert a.input_artifacts == ()
         assert a.output_schema_key == ""
         assert a.industry_hint == "n/v"

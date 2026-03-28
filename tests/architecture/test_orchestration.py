@@ -108,7 +108,7 @@ class TestFollowUpRehydration:
 
 REQUIRED_FIELDS = {
     "task_key", "label", "assignee", "target_section", "objective_template",
-    "depends_on", "run_condition", "input_artifacts", "output_schema_key",
+    "depends_on", "run_condition", "output_schema_key",
     "validation_rules",
 }
 VALID_RULE_CHECKS = {"non_placeholder", "min_items", "min_length"}
@@ -882,28 +882,19 @@ class TestSynthesisAcceptanceGate:
         for decision, expected_status in mapping.items():
             assert mapping[decision] == expected_status
 
-    def test_pipeline_runner_does_not_override_synthesis_admission(self):
-        """pipeline_runner must read _synthesis_admission, not re-decide."""
+    def test_pipeline_runner_reads_synthesis_admission_from_envelope(self):
+        """pipeline_runner must read synthesis admission from canonical envelope."""
         import inspect
         from src import pipeline_runner
         source = inspect.getsource(pipeline_runner.run_pipeline)
-        # The old implicit gate pattern: using target_company in an if-branch
-        # to decide generation_mode or acceptance. Data reads are fine.
-        assert 'if ag2_synthesis' not in source.replace('ag2_synthesis.get("_synthesis_admission"', ''), (
-            "pipeline_runner still contains an implicit ag2_synthesis gate "
-            "that should have been replaced by _synthesis_admission"
-        )
-        # The authoritative marker must be read
-        assert '_synthesis_admission' in source
+        assert 'resolve_admission' in source
 
     def test_rejected_synthesis_produces_blocked_artifact(self):
         """Rejected synthesis must not produce a fallback that looks like real content."""
-        # Simulate what pipeline_runner does for rejected synthesis
-        ag2_synthesis = {"_synthesis_admission": "rejected", "target_company": "n/v"}
         synthesis = {
             "section_status": "blocked",
-            "reason": ag2_synthesis.get("_synthesis_admission", "rejected"),
-            "target_company": ag2_synthesis.get("target_company", "n/v"),
+            "reason": "rejected",
+            "target_company": "n/v",
             "generation_mode": "blocked",
             "confidence": "low",
         }
